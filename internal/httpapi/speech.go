@@ -111,6 +111,22 @@ func (s *server) deliverSpeech(w http.ResponseWriter, r *http.Request, plan *ada
 		}
 	}
 	if err != nil {
+		// 二进制音频流一旦写出字节，状态码就固定为 200，也不能再追加 JSON：
+		// 那会被客户端当成音频的一部分。主动中止连接，让下载方感知截断。
+		if headersOut && plan.StreamFormat != adapter.StreamFormatSSE && !isClientCanceled(err) {
+			if info != nil {
+				info.errCode = errorBodyFrom(err).Code
+				var upstreamErr *mimo.Error
+				if errors.As(err, &upstreamErr) {
+					info.upstreamStatus = upstreamErr.StatusCode
+				}
+			}
+			s.log.Warn("aborting audio stream after partial response",
+				"request_id", requestIDFrom(r.Context()),
+				"error", err,
+			)
+			panic(http.ErrAbortHandler)
+		}
 		s.finishStream(w, r, sse, err, "speech.audio.error")
 		return
 	}

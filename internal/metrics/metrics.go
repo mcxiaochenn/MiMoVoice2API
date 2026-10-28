@@ -15,9 +15,10 @@ import (
 	"time"
 )
 
-// Buckets 是直方图的默认桶边界，单位由调用方决定（本项目都是秒）。
+// bucketBounds 是直方图的桶边界，单位由调用方决定（本项目都是秒）。
 // 上界取到 300s：长文本合成实测可达 75s，留出余量。
-var Buckets = []float64{
+// 不导出：避免调用方在运行时改动，破坏已记录序列的桶数一致性。
+var bucketBounds = [...]float64{
 	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
 	1, 2.5, 5, 10, 30, 60, 120, 300,
 }
@@ -125,7 +126,7 @@ func (r *Registry) ObserveHistogram(name, help string, value float64, labels ...
 		return
 	}
 	// SearchFloat64s 返回第一个 >= value 的桶，符合 Prometheus 的 le 语义。
-	if idx := sort.SearchFloat64s(Buckets, value); idx < len(Buckets) {
+	if idx := sort.SearchFloat64s(bucketBounds[:], value); idx < len(bucketBounds) {
 		s.counts[idx]++
 	}
 	s.sum += value
@@ -162,7 +163,7 @@ func (r *Registry) seriesLocked(name, help string, typ metricType, labels []Labe
 
 	s := f.series[key]
 	if s == nil {
-		s = &series{labels: key, counts: make([]uint64, len(Buckets))}
+		s = &series{labels: key, counts: make([]uint64, len(bucketBounds))}
 		f.series[key] = s
 	}
 	return s
@@ -229,7 +230,7 @@ func (r *Registry) Write(w io.Writer) error {
 			switch f.typ {
 			case typeHistogram:
 				var cumulative uint64
-				for i, bound := range Buckets {
+				for i, bound := range bucketBounds {
 					cumulative += s.counts[i]
 					fmt.Fprintf(&b, "%s_bucket%s %d\n", f.name, withLE(s.labels, formatFloat(bound)), cumulative)
 				}

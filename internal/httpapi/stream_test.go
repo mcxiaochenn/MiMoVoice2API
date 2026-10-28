@@ -269,3 +269,43 @@ func TestSpeechStreamUpstreamError(t *testing.T) {
 		t.Errorf("error code missing: %v", errObj)
 	}
 }
+
+// 二进制音频流（mp3/pcm）在已经推送数据后上游失败：不能再写 JSON 尾巴，
+// 否则客户端会把错误体当成音频的一部分。正确做法是中止连接，让下载方感知截断。
+func TestSpeechBinaryStreamAbortsAfterPartialWrite(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"audio\":{\"id\":\"a\",\"data\":\"QUJD\"}}}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// 之后直接断开：没有 stop、没有 [DONE]。
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"测试"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
+
+	rec := httptest.NewRecorder()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(rec, req)
+	}()
+
+	if recovered != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler (body %q)", recovered, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/mpeg" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	if body := rec.Body.String(); body != "ABC" {
+		t.Errorf("body = %q, want exactly the first chunk without JSON trailer", body)
+	}
+}

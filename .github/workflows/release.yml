@@ -3,18 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to release, for example v1.0.0"
-        required: true
 
 permissions:
   contents: write
   packages: write
-
-env:
-  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
   image:
@@ -22,8 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - uses: docker/setup-qemu-action@v3
         with:
@@ -57,7 +47,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ env.TAG }}
+            VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -67,12 +57,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists"
@@ -98,8 +87,6 @@ jobs:
             goarch: arm64
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
 
       - uses: actions/setup-go@v5
         with:
@@ -111,6 +98,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          TAG: ${{ github.ref_name }}
         run: |
           set -eu
           name="mimivoice2api_${TAG}_${GOOS}_${GOARCH}"
@@ -118,9 +106,9 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X main.version=${TAG} -X main.commit=${GITHUB_SHA}" \
             -o "dist/${name}/mimivoice2api" ./cmd/mimivoice2api
-          if [ -f README.md ]; then cp README.md "dist/${name}/README.md"; fi
+          cp README.md "dist/${name}/README.md"
           if [ "$GOOS" = "windows" ]; then
-            (cd dist && mv "${name}/mimivoice2api" "${name}/mimivoice2api.exe")
+            mv "dist/${name}/mimivoice2api" "dist/${name}/mimivoice2api.exe"
             (cd dist && zip -qr "${name}.zip" "${name}")
           else
             tar -C dist -czf "dist/${name}.tar.gz" "${name}"
@@ -129,6 +117,7 @@ jobs:
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -eu
           shopt -s nullglob

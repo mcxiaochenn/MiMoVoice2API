@@ -72,28 +72,32 @@ func (s *server) withAccessLog(next http.Handler) http.Handler {
 			defer s.metrics.AddGauge(metricHTTPInFlight, "HTTP requests currently being served.", -1)
 		}
 
+		// 用 defer 记录日志与指标：流式响应可能以 http.ErrAbortHandler 中止，
+		// 那种情况下也必须留下可观测记录，否则监控会漏掉截断的请求。
+		defer func() {
+			status := rec.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			info.inBytes = body.n
+			elapsed := time.Since(start)
+			s.observeRequest(info, status, rec.bytes, elapsed)
+
+			s.log.LogAttrs(ctx, slog.LevelInfo, "request",
+				slog.String("request_id", requestIDFrom(ctx)),
+				slog.String("route", info.route),
+				slog.Int("status", status),
+				slog.Int64("dur_ms", elapsed.Milliseconds()),
+				slog.Int64("in_bytes", info.inBytes),
+				slog.Int64("out_bytes", rec.bytes),
+				slog.String("model_requested", info.modelRequested),
+				slog.String("model_upstream", info.modelUpstream),
+				slog.Int("upstream_status", info.upstreamStatus),
+				slog.String("err_code", info.errCode),
+			)
+		}()
+
 		next.ServeHTTP(rec, r.WithContext(ctx))
-
-		status := rec.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-		info.inBytes = body.n
-		elapsed := time.Since(start)
-		s.observeRequest(info, status, rec.bytes, elapsed)
-
-		s.log.LogAttrs(ctx, slog.LevelInfo, "request",
-			slog.String("request_id", requestIDFrom(ctx)),
-			slog.String("route", info.route),
-			slog.Int("status", status),
-			slog.Int64("dur_ms", elapsed.Milliseconds()),
-			slog.Int64("in_bytes", info.inBytes),
-			slog.Int64("out_bytes", rec.bytes),
-			slog.String("model_requested", info.modelRequested),
-			slog.String("model_upstream", info.modelUpstream),
-			slog.Int("upstream_status", info.upstreamStatus),
-			slog.String("err_code", info.errCode),
-		)
 	})
 }
 
@@ -117,6 +121,11 @@ func (s *server) withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				// http.ErrAbortHandler 是标准库约定的「主动断开」信号：
+				// 必须原样抛回给 net/http，让连接直接关闭，而不是尝试写响应。
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
 				s.log.Error("panic recovered",
 					"request_id", requestIDFrom(r.Context()),
 					"panic", fmt.Sprint(recovered),
