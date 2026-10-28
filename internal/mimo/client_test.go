@@ -199,3 +199,146 @@ func TestObserverSeesTransportFailure(t *testing.T) {
 		t.Errorf("kind = %q", gotKind)
 	}
 }
+
+// 流式转写在首片之前就截断（只有 finish_reason=length，没有内容片）。
+func TestTranscribeStreamTruncatedBeforeFirstDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"length\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"seconds\":3}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	calls := 0
+	_, err := client.TranscribeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"}, func(string) error {
+		calls++
+		return nil
+	})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindTruncated {
+		t.Fatalf("error = %v, want truncated", err)
+	}
+	if calls != 0 {
+		t.Errorf("delta callbacks = %d, want 0", calls)
+	}
+}
+
+// 流式转写已经发出内容片后截断：同样必须报错，不允许按成功收尾。
+func TestTranscribeStreamTruncatedAfterDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"部分\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	var got []string
+	_, err := client.TranscribeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"}, func(delta string) error {
+		got = append(got, delta)
+		return nil
+	})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindTruncated {
+		t.Fatalf("error = %v, want truncated", err)
+	}
+	if len(got) != 1 || got[0] != "部分" {
+		t.Errorf("deltas = %q, want [部分]", got)
+	}
+}
+
+// 正常 stop 的流式转写不受截断判定影响。
+func TestTranscribeStreamNormalFinish(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"seconds\":2}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	result, err := client.TranscribeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"}, func(string) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("TranscribeStream error = %v", err)
+	}
+	if result.Text != "你好" || result.FinishReason != "stop" || result.Seconds != 2 {
+		t.Errorf("result = %+v", result)
+	}
+}
+
+// 流式合成在首片之前就截断：报 truncated 而不是「无音频」。
+func TestSynthesizeStreamTruncatedBeforeFirstChunk(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"length\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	_, err := client.SynthesizeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-tts"}, func(string) error {
+		return nil
+	})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindTruncated {
+		t.Fatalf("error = %v, want truncated", err)
+	}
+}
+
+// 流式合成已经发出音频片后截断：同样报错收尾。
+func TestSynthesizeStreamTruncatedAfterChunk(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"QUJD\"}}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	var got []string
+	_, err := client.SynthesizeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-tts"}, func(chunk string) error {
+		got = append(got, chunk)
+		return nil
+	})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindTruncated {
+		t.Fatalf("error = %v, want truncated", err)
+	}
+	if len(got) != 1 || got[0] != "QUJD" {
+		t.Errorf("chunks = %q, want [QUJD]", got)
+	}
+}
+
+// 正常 stop 的流式合成不受截断判定影响。
+func TestSynthesizeStreamNormalFinish(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"audio\":{\"data\":\"QUJD\"}}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	result, err := client.SynthesizeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-tts"}, func(string) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("SynthesizeStream error = %v", err)
+	}
+	if result.Chunks != 1 || result.FinishReason != "stop" {
+		t.Errorf("result = %+v", result)
+	}
+}

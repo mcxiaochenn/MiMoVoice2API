@@ -270,14 +270,20 @@ func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int,
 		}
 	}
 	if out.Choices[0].FinishReason == "length" {
-		return nil, resp.StatusCode, &Error{
-			Kind:       KindTruncated,
-			StatusCode: resp.StatusCode,
-			Message:    "upstream truncated the result (finish_reason=length); shorten the input and retry",
-		}
+		return nil, resp.StatusCode, truncatedError(resp.StatusCode)
 	}
 
 	return &out, resp.StatusCode, nil
+}
+
+// truncatedError 统一 finish_reason=length 的截断错误。
+// 非流式与流式共用同一文案，保证错误码、日志与指标的语义一致。
+func truncatedError(status int) *Error {
+	return &Error{
+		Kind:       KindTruncated,
+		StatusCode: status,
+		Message:    "upstream truncated the result (finish_reason=length); shorten the input and retry",
+	}
 }
 
 // TranscribeStream 调用上游流式识别，逐片回调文本增量。
@@ -326,6 +332,11 @@ func (c *Client) TranscribeStream(ctx context.Context, req ChatRequest, onDelta 
 	})
 	if err != nil {
 		return nil, streamError(ctx, err, resp.StatusCode)
+	}
+	// 与非流式 post() 语义一致：finish_reason=length 表示结果被截断，
+	// 不允许伪装成成功完成，由调用方决定补错误事件还是退回 JSON 错误。
+	if finish == "length" {
+		return nil, truncatedError(resp.StatusCode)
 	}
 
 	seconds := 0
@@ -389,6 +400,11 @@ func (c *Client) SynthesizeStream(ctx context.Context, req ChatRequest, onAudio 
 	})
 	if err != nil {
 		return nil, streamError(ctx, err, resp.StatusCode)
+	}
+	// 截断判定在「无音频」之前：零分片 + finish_reason=length 是首片前就截断，
+	// 应报 truncated 而不是 bad_response，两者客户端应对方式不同。
+	if finish == "length" {
+		return nil, truncatedError(resp.StatusCode)
 	}
 	if chunks == 0 {
 		return nil, &Error{

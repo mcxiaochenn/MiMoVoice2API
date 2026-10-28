@@ -181,13 +181,8 @@ func (s *server) streamTranscription(w http.ResponseWriter, r *http.Request, pla
 		s.finishStream(w, r, nil, err, "transcript.text.error")
 		return
 	}
-	if result.FinishReason == "length" {
-		// 文本已经边发边出了，无法回滚，只能记录并让客户端以 done 为准。
-		s.log.Warn("streamed transcription truncated by upstream",
-			"request_id", requestIDFrom(r.Context()),
-			"model", result.Model,
-		)
-	}
+	// finish_reason=length 在 mimo 层已按截断错误返回，走不到这里；
+	// 正常完成才发 done 事件。
 	if err := sse.event("transcript.text.done", transcriptDoneEvent{
 		Type:  "transcript.text.done",
 		Text:  result.Text,

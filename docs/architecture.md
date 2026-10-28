@@ -171,7 +171,7 @@ httpapi 输出 {"error": {...}}，并写 X-Request-ID
 | 429 | 429 `rate_limited` + `Retry-After` | 背压交给客户端 |
 | 5xx | 502 `upstream_error` | 网关语义 |
 | 超时 / 连接失败 | 504 `upstream_timeout` / 502 `upstream_unreachable` | 区分可重试与不可达 |
-| `finish_reason=length` | 502 `upstream_truncated` | 结果不完整，静默返回截断文本更糟 |
+| `finish_reason=length` | 502 `upstream_truncated` | 结果不完整，静默返回截断文本更糟；流式下同样按失败收尾（error 事件或中止），不发 `*.done` |
 
 约束：
 
@@ -298,7 +298,7 @@ services:
 | T7 | `mimo-v2.5-tts-voicedesign` 必带 `user` 消息且不接受 `voice` | 传 `voice` 直接 400，避免用户以为生效 |
 | T8 | ASR 只支持单段音频 | 多文件或多段直接 400 |
 | T9 | `optimize_text_preview` 仅 voicedesign 生效，且可省略 assistant 消息 | 本适配层不暴露该参数，避免语义分叉 |
-| T10 | 上游可能因长度限制返回 `finish_reason=length` | 502 `upstream_truncated`，提示拆分输入，不返回半截结果 |
+| T10 | 上游可能因长度限制返回 `finish_reason=length` | 非流式 502 `upstream_truncated`；流式同样按截断失败处理（已输出则 error 事件 / 中止连接，未输出则 502），绝不发 `*.done` |
 
 ## 13. 演进方向
 

@@ -316,3 +316,165 @@ func TestSpeechBinaryStreamAbortsAfterPartialWrite(t *testing.T) {
 		t.Errorf("metrics missing %q", want)
 	}
 }
+
+// 流式转写在首片之前就截断：SSE 尚未开始，回标准 JSON 错误。
+func TestTranscriptionStreamTruncatedBeforeFirstDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-asr\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"length\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	rec := doTranscription(t, handler, transcriptionRequest{
+		fields: map[string]string{"model": "whisper-1", "stream": "true"},
+		file:   testWAV,
+	})
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := errorCode(t, rec.Body.Bytes()); got != "upstream_truncated" {
+		t.Errorf("code = %q, want upstream_truncated", got)
+	}
+}
+
+// 流式转写已经发出增量后截断：不能再发 done，改发 transcript.text.error。
+func TestTranscriptionStreamTruncatedAfterDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-asr\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"部分\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-asr\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	rec := doTranscription(t, handler, transcriptionRequest{
+		fields: map[string]string{"model": "whisper-1", "stream": "true"},
+		file:   testWAV,
+	})
+
+	events := parseSSE(t, rec.Body.String())
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want delta + error", events)
+	}
+	if events[0].Name != "transcript.text.delta" || events[0].Data["delta"] != "部分" {
+		t.Errorf("event[0] = %+v", events[0])
+	}
+	last := events[len(events)-1]
+	if last.Name != "transcript.text.error" {
+		t.Fatalf("last event = %q, want transcript.text.error", last.Name)
+	}
+	errObj, _ := last.Data["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "upstream_truncated" {
+		t.Errorf("error = %v, want code upstream_truncated", last.Data)
+	}
+}
+
+// SSE 合成已经推送音频片后截断：补 speech.audio.error，替代 done。
+func TestSpeechStreamTruncatedAfterDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"audio\":{\"id\":\"a\",\"data\":\"QUJD\"}}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	rec := doSpeech(t, handler, `{"input":"测试","stream_format":"sse","response_format":"mp3"}`, true)
+
+	events := parseSSE(t, rec.Body.String())
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want delta + error", events)
+	}
+	if events[0].Name != "speech.audio.delta" {
+		t.Errorf("event[0] = %q, want speech.audio.delta", events[0].Name)
+	}
+	last := events[len(events)-1]
+	if last.Name != "speech.audio.error" {
+		t.Fatalf("last event = %q, want speech.audio.error", last.Name)
+	}
+	errObj, _ := last.Data["error"].(map[string]any)
+	if errObj == nil || errObj["code"] != "upstream_truncated" {
+		t.Errorf("error = %v, want code upstream_truncated", last.Data)
+	}
+}
+
+// 合成在首片之前就截断：SSE 尚未开始，回标准 JSON 错误。
+func TestSpeechStreamTruncatedBeforeFirstChunk(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"length\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	rec := doSpeech(t, handler, `{"input":"测试","stream_format":"sse"}`, true)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := errorCode(t, rec.Body.Bytes()); got != "upstream_truncated" {
+		t.Errorf("code = %q, want upstream_truncated", got)
+	}
+}
+
+// 二进制音频流已写出字节后截断：中止连接而不是追加 JSON 错误体。
+func TestSpeechBinaryStreamTruncatedAborts(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"audio\":{\"id\":\"a\",\"data\":\"QUJD\"}}}]}\n\n")
+		fmt.Fprint(w, "data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", strings.NewReader(`{"input":"测试","response_format":"pcm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret")
+
+	rec := httptest.NewRecorder()
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(rec, req)
+	}()
+
+	if recovered != http.ErrAbortHandler {
+		t.Fatalf("panic = %v, want http.ErrAbortHandler (body %q)", recovered, rec.Body.String())
+	}
+	if body := rec.Body.String(); body != "ABC" {
+		t.Errorf("body = %q, want only the audio chunk", body)
+	}
+
+	metricsBody := doGet(t, handler, "/metrics", "secret").Body.String()
+	want := `mimo_voice2api_http_requests_total{err_code="upstream_truncated",route="speech",status="200"} 1`
+	if !strings.Contains(metricsBody, want) {
+		t.Errorf("metrics missing %q", want)
+	}
+}

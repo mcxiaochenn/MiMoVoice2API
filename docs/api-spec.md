@@ -180,9 +180,10 @@ data: {"type":"transcript.text.done","text":"你好，世界。","usage":{"type"
 
 - 上游 `delta.content` 逐片转成 `transcript.text.delta`，**不缓冲、不合并**，来一片发一片
 - 收尾固定发 `transcript.text.done`，`text` 是拼接后的完整结果，`usage` 来自上游用量帧
+- **`finish_reason=length` 一律视为截断，不发 `done`**：已发过 delta 则补 `transcript.text.error`（`error.code=upstream_truncated`）；一片都没发则退回 502 JSON `upstream_truncated`。与非流式语义一致
 - `response_format=verbose_json` 与 `stream=true` 互斥，返回 400 `unsupported_parameter`：流式没有承载时长/语言的字段
 - 上游若在流中途失败（HTTP 已 200），补发 `transcript.text.error`，事件内带 `error.code`，与 `speech.audio.error` 同构
-- 上游未发 `[DONE]` 就断开视为截断，同样走 error 事件，不会伪装成正常结束
+- 上游未发 `[DONE]` 就断开视为流中断（`upstream_bad_response`），同样走 error 事件，不会伪装成正常结束
 - 上游在响应头之前就返回 4xx/5xx 时，仍然回标准 JSON 错误（此时 SSE 尚未开始）
 
 ## 3. 语音合成 `POST /v1/audio/speech`
@@ -381,6 +382,7 @@ data: {"type":"speech.audio.error","error":{"message":"...","type":"api_error","
 
 - 分片可独立 base64 解码（实测 14/14 全部成功），因此不做跨片解码缓冲
 - `voicedesign` / `voiceclone` 的流式是单片的降级模式，适配层照样只发一个 delta
+- **`finish_reason=length` 视为截断，不发 `speech.audio.done`**：SSE 模式已发过 delta 则补 `speech.audio.error`（`error.code=upstream_truncated`）；二进制模式已写出字节则中止连接；都没开始则退回 502 JSON `upstream_truncated`
 - 二进制模式不设置 `Content-Length`，走 chunked
 - 二进制模式一旦写出音频，再遇到上游中断就只能断开连接（不追加 JSON），客户端应把不完整下载判为失败；SSE 模式此时会补一个 `speech.audio.error` 事件
 - 客户端断开立即取消上游请求，日志记 `client_canceled`，不算上游故障
@@ -501,7 +503,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 | 502 | `api_error` | `upstream_auth_error` | 上游 401/403 | 运维检查 `MIMO_API_KEY` |
 | 502 | `api_error` | `upstream_unreachable` | 连接失败 / DNS 失败 | 稍后重试 |
 | 502 | `api_error` | `upstream_bad_response` | 上游 200 但结构不可解析，或上游 404（`MIMO_BASE_URL` 配错） | 反馈；404 时检查上游地址 |
-| 502 | `api_error` | `upstream_truncated` | `finish_reason=length` | 拆分输入后重试 |
+| 502 | `api_error` | `upstream_truncated` | `finish_reason=length`（流式已输出时改为 `*.error` 事件 / 中止连接） | 拆分输入后重试 |
 | 504 | `api_error` | `upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 稍后重试或缩短输入 |
 | 499 | `api_error` | `client_closed_request` | 客户端在流完成前断开 | 通常写不出去，仅用于日志与指标 |
 
