@@ -176,4 +176,4 @@ cmd/mimivoice2api  →  internal/httpapi  →  internal/adapter  →  internal/m
 3. 镜像体积增加多少？是否值得？
 4. 维护者是否活跃、许可证是否兼容？
 
-预期结论：M1–M2 零第三方依赖；若未来加指标，优先手写 `/metrics` 文本格式，而不是拉 Prometheus 客户端。
+预期结论：M1–M4 零第三方依赖；指标选择手写 `/metrics` 文本格式（`internal/metrics`），而不是拉 Prometheus 客户端，实现约 300 行。

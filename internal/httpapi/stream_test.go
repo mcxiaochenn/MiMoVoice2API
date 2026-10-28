@@ -308,4 +308,11 @@ func TestSpeechBinaryStreamAbortsAfterPartialWrite(t *testing.T) {
 	if body := rec.Body.String(); body != "ABC" {
 		t.Errorf("body = %q, want exactly the first chunk without JSON trailer", body)
 	}
+
+	// 中止的请求也必须进入指标，否则监控会漏掉被截断的下载。
+	metricsBody := doGet(t, handler, "/metrics", "secret").Body.String()
+	want := `mimo_voice2api_http_requests_total{err_code="upstream_bad_response",route="speech",status="200"} 1`
+	if !strings.Contains(metricsBody, want) {
+		t.Errorf("metrics missing %q", want)
+	}
 }

@@ -206,7 +206,7 @@ MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token go run ./cmd/mimivoice2api
 
 go vet ./...
 go test ./...
-gofmt -l .
+gofmt -l ./cmd ./internal
 
 curl -sS localhost:8080/metrics -H "Authorization: Bearer dev-token" | head
 ```

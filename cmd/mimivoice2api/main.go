@@ -49,6 +49,9 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+		// 标准库的协议级错误也走结构化日志，保持字段风格一致。
+		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		// WriteTimeout 故意为 0：M3 的流式响应不能被整体写超时截断。
 	}
 
