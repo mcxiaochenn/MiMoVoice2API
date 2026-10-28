@@ -1,0 +1,5 @@
+# 统一按 LF 检出，避免 Dockerfile 的续行在 Windows 上被 CRLF 破坏
+* text=auto eol=lf
+
+*.wav binary
+*.mp3 binary
