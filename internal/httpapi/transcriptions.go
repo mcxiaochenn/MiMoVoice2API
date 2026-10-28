@@ -109,6 +109,11 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	info.modelRequested = plan.ModelRequested
 	info.modelUpstream = plan.ModelUpstream
 
+	if plan.Stream {
+		s.streamTranscription(w, r, plan)
+		return
+	}
+
 	result, err := s.mimo.Transcribe(r.Context(), plan.Request)
 	if err != nil {
 		s.writeUpstreamError(w, r, err)
@@ -137,6 +142,62 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, verbose)
 	default:
 		writeJSON(w, http.StatusOK, transcriptionResponse{Text: result.Text})
+	}
+}
+
+// streamTranscription 把上游增量文本转成 OpenAI 的 transcript.text.* 事件。
+// 响应头等到第一个增量到达才写出：上游若在此之前返回 4xx，仍能回标准 JSON 错误。
+func (s *server) streamTranscription(w http.ResponseWriter, r *http.Request, plan *adapter.TranscriptionPlan) {
+	var sse *sseWriter
+	ensure := func() error {
+		if sse != nil {
+			return nil
+		}
+		if len(plan.Warnings) > 0 {
+			w.Header().Set("X-Adapter-Warning", strings.Join(plan.Warnings, "; "))
+		}
+		writer, ok := newSSEWriter(w)
+		if !ok {
+			return errNoFlusher
+		}
+		sse = writer
+		return nil
+	}
+
+	result, err := s.mimo.TranscribeStream(r.Context(), plan.Request, func(delta string) error {
+		if err := ensure(); err != nil {
+			return err
+		}
+		return sse.event("transcript.text.delta", transcriptDeltaEvent{
+			Type:  "transcript.text.delta",
+			Delta: delta,
+		})
+	})
+	if err != nil {
+		s.finishStream(w, r, sse, err, "transcript.text.error")
+		return
+	}
+
+	if err := ensure(); err != nil {
+		s.finishStream(w, r, nil, err, "transcript.text.error")
+		return
+	}
+	if result.FinishReason == "length" {
+		// 文本已经边发边出了，无法回滚，只能记录并让客户端以 done 为准。
+		s.log.Warn("streamed transcription truncated by upstream",
+			"request_id", requestIDFrom(r.Context()),
+			"model", result.Model,
+		)
+	}
+	if err := sse.event("transcript.text.done", transcriptDoneEvent{
+		Type:  "transcript.text.done",
+		Text:  result.Text,
+		Usage: usageFrom(result.Usage),
+	}); err != nil {
+		s.log.Warn("failed to write transcript done event",
+			"request_id", requestIDFrom(r.Context()),
+			"error", err,
+		)
 	}
 }
 

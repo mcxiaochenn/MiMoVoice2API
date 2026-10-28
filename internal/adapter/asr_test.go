@@ -184,10 +184,13 @@ func TestBuildTranscriptionValidation(t *testing.T) {
 			wantParam: "response_format",
 		},
 		{
-			name:      "streaming not implemented",
-			mutate:    func(in *TranscriptionInput) { in.Stream = true },
+			name: "streaming with verbose_json",
+			mutate: func(in *TranscriptionInput) {
+				in.Stream = true
+				in.ResponseFormat = ResponseFormatVerboseJSON
+			},
 			wantCode:  "unsupported_parameter",
-			wantParam: "stream",
+			wantParam: "response_format",
 		},
 		{
 			name:      "word timestamps unsupported",

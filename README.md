@@ -2,7 +2,7 @@
 
 把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
 
-> **当前状态：M2（转写 + 合成可用，官方端点实测通过）**。已实现非流式语音转写与合成、模型列表、健康检查，附带 Dockerfile / Compose；流式（M3）与 GHCR 镜像发布（M4）尚未完成。
+> **当前状态：M3（转写 + 合成 + 流式，官方端点实测通过）**。已实现转写与合成（含 SSE / chunked 流式）、模型列表、健康检查，附带 Dockerfile / Compose；GHCR 镜像发布（M4）尚未完成。
 > 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 为什么需要它
@@ -20,8 +20,8 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 
 | 方法 | 路径 | 说明 | 里程碑 |
 | --- | --- | --- | --- |
-| POST | `/v1/audio/transcriptions` | 语音转写，`multipart/form-data` | M1 非流式 / M3 流式 |
-| POST | `/v1/audio/speech` | 语音合成，JSON 进、音频流出 | M2 非流式 / M3 流式 |
+| POST | `/v1/audio/transcriptions` | 语音转写，`multipart/form-data` | 非流式 + `stream=true` SSE |
+| POST | `/v1/audio/speech` | 语音合成，JSON 进、音频流出 | 非流式 + `stream_format=audio` / `sse` |
 | GET | `/v1/models` | 可用模型列表 | M1 |
 | GET | `/healthz` | 健康检查（含版本号） | M1 |
 
@@ -40,7 +40,9 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 | `instructions`（风格提示） | 支持 | 映射为 MiMo 的 `user` 消息 |
 | `speed` | 忽略 | 上游无此参数；非 1.0 时回 `X-Adapter-Warning` |
 | `prompt` / `temperature` | 忽略 | 上游无对应能力 |
-| 流式（`stream` / `stream_format`） | M3 | M1/M2 明确拒绝 |
+| 流式转写 `stream=true` | 支持 | SSE：`transcript.text.delta` / `.done`；与 `verbose_json` 互斥 |
+| 流式合成 `stream_format` | 支持 | `audio`（chunked 二进制）或 `sse`（`speech.audio.delta` / `.done`） |
+| 流式 `wav` | 降级 | 上游分片是独立 WAV 文件，只能整段下发；要低延迟用 `mp3` / `pcm` |
 | 音色克隆 / 音色设计 | 支持 | 通过 `model` + `voice` / `instructions` 触发 |
 
 输出音频参数（2026-10-28 官方端点实测）：`mp3` 为 MPEG2 Layer III / 24 kHz VBR，带 Xing 头；`wav` 与 `pcm` 均为 24 kHz / 16-bit / 单声道。`pcm` 没有文件头，消费端需按这组参数解释。
@@ -55,7 +57,7 @@ docker build -t mimivoice2api:dev .
 docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
 ```
 
-OpenAI Python SDK 接入（转写与合成都可用，流式在 M3）：
+OpenAI Python SDK 接入：
 
 ```python
 from openai import OpenAI
@@ -67,6 +69,31 @@ with open("sample.wav", "rb") as f:
 
 speech = client.audio.speech.create(model="tts-1", voice="nova", input="你好，这是一段测试。")
 speech.write_to_file("out.mp3")
+```
+
+流式：转写逐字回显，合成边收边播。
+
+```python
+# 转写：SSE 增量文本
+with open("sample.wav", "rb") as f:
+    for event in client.audio.transcriptions.create(model="whisper-1", file=f, stream=True):
+        if event.type == "transcript.text.delta":
+            print(event.delta, end="", flush=True)
+        elif event.type == "transcript.text.done":
+            print("\n最终:", event.text)
+```
+
+```bash
+# 合成：chunked 二进制，边收边写
+curl -sS -N localhost:8080/v1/audio/speech \
+  -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"voice":"nova","input":"流式合成。","response_format":"pcm"}' \
+  --output out.pcm
+
+# 合成：SSE 事件
+curl -sS -N localhost:8080/v1/audio/speech \
+  -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"voice":"nova","input":"流式合成。","stream_format":"sse"}'
 ```
 
 ## 配置

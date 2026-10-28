@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/adapter"
+	"github.com/mcxiaochenn/MiMoVoice2API/internal/mimo"
 )
 
 func (s *server) handleSpeech(w http.ResponseWriter, r *http.Request) {
@@ -47,21 +48,94 @@ func (s *server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	info.modelRequested = plan.ModelRequested
 	info.modelUpstream = plan.ModelUpstream
 
-	result, err := s.mimo.Synthesize(r.Context(), plan.Request)
+	s.deliverSpeech(w, r, plan)
+}
+
+// deliverSpeech 把合成结果交付给客户端。
+// mp3 / pcm 走上游流式，分片到了就转发；wav 的分片是独立完整文件，只能整段下发。
+func (s *server) deliverSpeech(w http.ResponseWriter, r *http.Request, plan *adapter.SpeechPlan) {
+	info := requestInfoFrom(r.Context())
+
+	var (
+		sse        *sseWriter
+		headersOut bool
+	)
+
+	// writeChunk 按下游格式交付一片音频：SSE 模式发 delta 事件，audio 模式解码后写二进制。
+	writeChunk := func(audioBase64 string) error {
+		if plan.StreamFormat == adapter.StreamFormatSSE {
+			if sse == nil {
+				if len(plan.Warnings) > 0 {
+					w.Header().Set("X-Adapter-Warning", strings.Join(plan.Warnings, "; "))
+				}
+				writer, ok := newSSEWriter(w)
+				if !ok {
+					return errNoFlusher
+				}
+				sse = writer
+			}
+			return sse.event("speech.audio.delta", speechDeltaEvent{
+				Type:           "speech.audio.delta",
+				Audio:          audioBase64,
+				ResponseFormat: plan.ResponseFormat,
+			})
+		}
+
+		if !headersOut {
+			w.Header().Set("Content-Type", plan.ContentType)
+			if len(plan.Warnings) > 0 {
+				w.Header().Set("X-Adapter-Warning", strings.Join(plan.Warnings, "; "))
+			}
+			w.WriteHeader(http.StatusOK)
+			headersOut = true
+		}
+		if _, err := io.Copy(w, base64.NewDecoder(base64.StdEncoding, strings.NewReader(audioBase64))); err != nil {
+			return err
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	}
+
+	var (
+		result *mimo.Speech
+		err    error
+	)
+	if plan.Request.Stream {
+		result, err = s.mimo.SynthesizeStream(r.Context(), plan.Request, writeChunk)
+	} else {
+		result, err = s.mimo.Synthesize(r.Context(), plan.Request)
+		if err == nil {
+			err = writeChunk(result.AudioBase64)
+		}
+	}
 	if err != nil {
-		s.writeUpstreamError(w, r, err)
+		s.finishStream(w, r, sse, err, "speech.audio.error")
 		return
 	}
 	info.upstreamStatus = result.UpstreamStatus
 
-	w.Header().Set("Content-Type", plan.ContentType)
-	if len(plan.Warnings) > 0 {
-		w.Header().Set("X-Adapter-Warning", strings.Join(plan.Warnings, "; "))
+	// 二进制流没有结束事件，写完即可。
+	if plan.StreamFormat != adapter.StreamFormatSSE {
+		return
 	}
-	w.WriteHeader(http.StatusOK)
-
-	if _, err := io.Copy(w, base64.NewDecoder(base64.StdEncoding, strings.NewReader(result.AudioBase64))); err != nil {
-		s.log.Warn("failed to write audio response",
+	if sse == nil {
+		if len(plan.Warnings) > 0 {
+			w.Header().Set("X-Adapter-Warning", strings.Join(plan.Warnings, "; "))
+		}
+		writer, ok := newSSEWriter(w)
+		if !ok {
+			s.finishStream(w, r, nil, errNoFlusher, "speech.audio.error")
+			return
+		}
+		sse = writer
+	}
+	if err := sse.event("speech.audio.done", speechDoneEvent{
+		Type:  "speech.audio.done",
+		Usage: usageFrom(result.Usage),
+	}); err != nil {
+		s.log.Warn("failed to write speech done event",
 			"request_id", requestIDFrom(r.Context()),
 			"error", err,
 		)

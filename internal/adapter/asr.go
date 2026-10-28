@@ -34,6 +34,7 @@ type TranscriptionPlan struct {
 	Request        mimo.ChatRequest
 	ResponseFormat string
 	Language       string
+	Stream         bool
 	ModelRequested string
 	ModelUpstream  string
 	Warnings       []string
@@ -61,11 +62,12 @@ func BuildTranscription(in TranscriptionInput, defaultModel string) (*Transcript
 		return nil, formatErr
 	}
 
-	if in.Stream {
+	// 流式只输出增量文本与最终文本，没有位置信息可承载 verbose_json 的字段。
+	if in.Stream && responseFormat == ResponseFormatVerboseJSON {
 		return nil, &Error{
 			Code:    "unsupported_parameter",
-			Param:   "stream",
-			Message: "streaming transcription is not supported yet; set stream=false (planned for M3)",
+			Param:   "response_format",
+			Message: "verbose_json is not supported with stream=true; use json or text",
 		}
 	}
 
@@ -101,13 +103,14 @@ func BuildTranscription(in TranscriptionInput, defaultModel string) (*Transcript
 			},
 		},
 		ASROptions: &mimo.ASROptions{Language: language},
-		Stream:     false,
+		Stream:     in.Stream,
 	}
 
 	return &TranscriptionPlan{
 		Request:        request,
 		ResponseFormat: responseFormat,
 		Language:       language,
+		Stream:         in.Stream,
 		ModelRequested: strings.TrimSpace(in.Model),
 		ModelUpstream:  model,
 		Warnings:       warnings,

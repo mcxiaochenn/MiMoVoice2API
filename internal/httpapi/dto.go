@@ -55,3 +55,42 @@ type speechRequest struct {
 	Speed          json.RawMessage `json:"speed"`
 	StreamFormat   string          `json:"stream_format"`
 }
+
+// 以下为 SSE 事件负载，字段名与 OpenAI 的 speech.audio.* / transcript.text.* 对齐。
+
+// usageTokens 是 OpenAI 的 token 用量对象，type 固定为 tokens。
+type usageTokens struct {
+	Type         string `json:"type"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	TotalTokens  int    `json:"total_tokens"`
+}
+
+type transcriptDeltaEvent struct {
+	Type  string `json:"type"`
+	Delta string `json:"delta"`
+}
+
+type transcriptDoneEvent struct {
+	Type  string       `json:"type"`
+	Text  string       `json:"text"`
+	Usage *usageTokens `json:"usage,omitempty"`
+}
+
+type speechDeltaEvent struct {
+	Type           string `json:"type"`
+	Audio          string `json:"audio"`
+	ResponseFormat string `json:"response_format"`
+}
+
+type speechDoneEvent struct {
+	Type  string       `json:"type"`
+	Usage *usageTokens `json:"usage,omitempty"`
+}
+
+// streamErrorEvent 在流中途失败时发出，替代对应的 done 事件。
+// transcript.text.* 与 speech.audio.* 共用同一结构，只有 type 不同。
+type streamErrorEvent struct {
+	Type  string    `json:"type"`
+	Error errorBody `json:"error"`
+}

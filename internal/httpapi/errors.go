@@ -96,6 +96,9 @@ func apiErrorFromUpstream(err *mimo.Error) apiError {
 		}
 	case mimo.KindTruncated:
 		return apiError{status: http.StatusBadGateway, typ: "api_error", code: "upstream_truncated", message: message}
+	case mimo.KindCanceled:
+		// 客户端已经走了，这个响应基本写不出去，主要为了让日志和指标可读。
+		return apiError{status: 499, typ: "api_error", code: "client_closed_request", message: "request canceled by the client"}
 	case mimo.KindServer:
 		return apiError{status: http.StatusBadGateway, typ: "api_error", code: "upstream_error", message: message}
 	default:

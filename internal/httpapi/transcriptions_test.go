@@ -293,9 +293,10 @@ func TestTranscriptionsLocalErrors(t *testing.T) {
 			wantCode: "unsupported_response_format",
 		},
 		{
-			name: "streaming",
+			// 流式只输出增量文本与最终文本，承载不了 verbose_json 的字段，这种组合必须本地拒绝。
+			name: "stream with verbose_json",
 			spec: transcriptionRequest{
-				fields: map[string]string{"model": "whisper-1", "stream": "true"},
+				fields: map[string]string{"model": "whisper-1", "stream": "true", "response_format": "verbose_json"},
 				file:   testWAV,
 			},
 			wantCode: "unsupported_parameter",

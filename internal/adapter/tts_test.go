@@ -132,8 +132,8 @@ func TestBuildSpeechValidation(t *testing.T) {
 			wantParam: "input",
 		},
 		{
-			name:      "sse stream format",
-			mutate:    func(in *SpeechInput) { in.StreamFormat = "sse" },
+			name:      "unknown stream format",
+			mutate:    func(in *SpeechInput) { in.StreamFormat = "websocket" },
 			maxChars:  1000,
 			wantCode:  "unsupported_parameter",
 			wantParam: "stream_format",

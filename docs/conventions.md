@@ -28,11 +28,12 @@ MiMoVoice2API/
 │   ├── httpapi/
 │   │   ├── router.go             M1   路由表与中间件串联
 │   │   ├── middleware.go         M1   request id、recover、鉴权、body limit、访问日志
-│   │   ├── transcriptions.go     M1
-│   │   ├── speech.go             M2
+│   │   ├── transcriptions.go     M1/M3 非流式 + SSE 增量转写
+│   │   ├── speech.go             M2/M3 非流式 + 二进制/SSE 流式合成
+│   │   ├── sse.go                M3   下游 SSE 写出与流内错误
 │   │   ├── models.go             M1
 │   │   ├── health.go             M1
-│   │   ├── dto.go                M1/M2 下游请求/响应结构
+│   │   ├── dto.go                M1/M3 下游请求/响应/事件结构
 │   │   └── errors.go             M1   OpenAI 错误 envelope
 │   ├── adapter/
 │   │   ├── asr.go                M1   纯映射
@@ -41,9 +42,9 @@ MiMoVoice2API/
 │   │   ├── voice.go              M2   音色别名与克隆样本判定
 │   │   └── errors.go             M1   字段级错误类型
 │   ├── mimo/
-│   │   ├── client.go             M1   HTTP 客户端、状态码分类、错误构造
+│   │   ├── client.go             M1   客户端、状态码分类、流式调用、429 重试
 │   │   ├── types.go              M1   上游请求/响应结构
-│   │   └── sse.go                M3   SSE 解析
+│   │   └── sse.go                M3   上游 SSE 解析、截断判定
 │   └── audio/
 │       └── sniff.go              M1   魔数嗅探、格式 ↔ MIME
 ├── testdata/

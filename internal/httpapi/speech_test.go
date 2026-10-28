@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,27 +23,79 @@ func doSpeech(t *testing.T, handler http.Handler, body string, withAuth bool) *h
 	return rec
 }
 
-func audioResponse(t *testing.T, w http.ResponseWriter, payload []byte, model string) {
+// audioResponse 按请求体的 stream 字段决定响应形态：
+// 流式回 SSE 分片，非流式回整段 JSON。分片按 4 字节对齐，与上游实际行为一致。
+func audioResponse(t *testing.T, w http.ResponseWriter, payload []byte, model string, stream bool) {
 	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":    "chatcmpl-audio",
-		"model": model,
-		"choices": []any{
-			map[string]any{
-				"index":         0,
-				"finish_reason": "stop",
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": "",
-					"audio": map[string]any{
-						"id":   "audio-1",
-						"data": base64.StdEncoding.EncodeToString(payload),
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	if !stream {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "chatcmpl-audio",
+			"model": model,
+			"choices": []any{
+				map[string]any{
+					"index":         0,
+					"finish_reason": "stop",
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"audio": map[string]any{
+							"id":   "audio-1",
+							"data": encoded,
+						},
 					},
 				},
 			},
-		},
-	})
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	flusher, _ := w.(http.Flusher)
+	writeChunk := func(choices []any) {
+		data, err := json.Marshal(map[string]any{
+			"id":      "chatcmpl-audio",
+			"model":   model,
+			"choices": choices,
+		})
+		if err != nil {
+			t.Errorf("marshal stream chunk: %v", err)
+			return
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	writeChunk([]any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil}})
+
+	cut := (len(encoded) / 8) * 4
+	for _, part := range []string{encoded[:cut], encoded[cut:]} {
+		if part == "" {
+			continue
+		}
+		writeChunk([]any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{"audio": map[string]any{"id": "audio-1", "data": part}},
+			"finish_reason": nil,
+		}})
+	}
+
+	writeChunk([]any{map[string]any{"index": 0, "delta": map[string]any{"content": ""}, "finish_reason": "stop"}})
+	writeChunk([]any{})
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+}
+
+// wantsStream 从已解码的请求体里读 stream 字段。
+func wantsStream(decoded map[string]any) bool {
+	stream, _ := decoded["stream"].(bool)
+	return stream
 }
 
 func TestSpeechSuccess(t *testing.T) {
@@ -58,7 +111,7 @@ func TestSpeechSuccess(t *testing.T) {
 		} else {
 			capture.store(decoded)
 		}
-		audioResponse(t, w, audioBytes, "mimo-v2.5-tts")
+		audioResponse(t, w, audioBytes, "mimo-v2.5-tts", wantsStream(decoded))
 	}))
 	defer upstream.Close()
 
@@ -91,8 +144,9 @@ func TestSpeechSuccess(t *testing.T) {
 	if captured["model"] != "mimo-v2.5-tts" {
 		t.Errorf("upstream model = %v", captured["model"])
 	}
-	if captured["stream"] != false {
-		t.Errorf("upstream stream = %v", captured["stream"])
+	// mp3 走上游流式，分片到达即可转发；wav 才走非流式。
+	if captured["stream"] != true {
+		t.Errorf("upstream stream = %v, want true", captured["stream"])
 	}
 
 	audioOptions := captured["audio"].(map[string]any)
@@ -126,7 +180,9 @@ func TestSpeechFormats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.format, func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				audioResponse(t, w, []byte("audio-"+tt.format), "mimo-v2.5-tts")
+				var decoded map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&decoded)
+				audioResponse(t, w, []byte("audio-"+tt.format), "mimo-v2.5-tts", wantsStream(decoded))
 			}))
 			defer upstream.Close()
 
@@ -152,7 +208,7 @@ func TestSpeechVoiceDesign(t *testing.T) {
 		var decoded map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&decoded)
 		capture.store(decoded)
-		audioResponse(t, w, []byte("design"), "mimo-v2.5-tts-voicedesign")
+		audioResponse(t, w, []byte("design"), "mimo-v2.5-tts-voicedesign", wantsStream(decoded))
 	}))
 	defer upstream.Close()
 
@@ -184,7 +240,7 @@ func TestSpeechVoiceClone(t *testing.T) {
 		var decoded map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&decoded)
 		capture.store(decoded)
-		audioResponse(t, w, []byte("clone"), "mimo-v2.5-tts-voiceclone")
+		audioResponse(t, w, []byte("clone"), "mimo-v2.5-tts-voiceclone", wantsStream(decoded))
 	}))
 	defer upstream.Close()
 
@@ -229,7 +285,7 @@ func TestSpeechLocalErrors(t *testing.T) {
 		{name: "unknown model", body: `{"model":"tts-9","input":"x"}`, maxChars: 1000, withAuth: true, wantCode: "model_not_found", wantParam: "model"},
 		{name: "unknown voice", body: `{"input":"x","voice":"mecha"}`, maxChars: 1000, withAuth: true, wantCode: "voice_not_found", wantParam: "voice"},
 		{name: "opus format", body: `{"input":"x","response_format":"opus"}`, maxChars: 1000, withAuth: true, wantCode: "unsupported_response_format", wantParam: "response_format"},
-		{name: "sse stream", body: `{"input":"x","stream_format":"sse"}`, maxChars: 1000, withAuth: true, wantCode: "unsupported_parameter", wantParam: "stream_format"},
+		{name: "invalid stream format", body: `{"input":"x","stream_format":"websocket"}`, maxChars: 1000, withAuth: true, wantCode: "unsupported_parameter", wantParam: "stream_format"},
 		{name: "speed not a number", body: `{"input":"x","speed":"fast"}`, maxChars: 1000, withAuth: true, wantCode: "unsupported_parameter", wantParam: "speed"},
 		{name: "voicedesign without instructions", body: `{"model":"mimo-v2.5-tts-voicedesign","input":"x"}`, maxChars: 1000, withAuth: true, wantCode: "missing_instructions", wantParam: "instructions"},
 		{name: "voiceclone without voice", body: `{"model":"mimo-v2.5-tts-voiceclone","input":"x"}`, maxChars: 1000, withAuth: true, wantCode: "missing_voice", wantParam: "voice"},

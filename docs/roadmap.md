@@ -115,9 +115,11 @@ curl -sS localhost:8080/v1/audio/speech \
 
 **风险**：已消除。克隆样本确认**必须**是 DataURL，原「剥离前缀」实现会被上游拒为 `Param Incorrect`，现已改为补全前缀并修正测试。
 
-## M3 — 流式（复杂度 L）
+## M3 — 流式（已实现，官方端点实测通过）
 
 **目标**：转写与合成的流式路径打通，首字节延迟显著低于非流式。
+
+**状态**：2026-10-28 官方端点实测通过。转写 SSE 逐字下发；合成支持 chunked 二进制与 SSE 双通道，首字节 0.77–0.92 s，同一句话非流式 wav 为 3.48 s。429 单次重试已实现并有单测覆盖。
 
 范围：
 
@@ -126,16 +128,16 @@ curl -sS localhost:8080/v1/audio/speech \
 - 合成 `stream_format=sse`：上游 `delta.audio.data` → 下游 `speech.audio.delta` / `speech.audio.done`
 - 合成 `stream_format=audio`：chunked 二进制，边解 base64 边写
 - 客户端断开 → 取消上游请求；`Flusher` 及时 flush
-- 429 单次重试（尊重 `Retry-After`）
+- 429 单次重试（尊重 `Retry-After`，等待上限 10 s）
 
 **验收**
 
-- [ ] `curl -N` 能看到连续事件，事件顺序与终止事件正确
-- [ ] 中断客户端后，上游连接在 1s 内关闭（看日志与上游用量）
-- [ ] 流式合成不再整段缓冲，首字节时间 < 非流式的 50%（同一文本实测）
-- [ ] 事件名与 OpenAI 官方文档一致（实现前复核，见 api-spec 第 8 节 Q5）
+- [x] `curl -N` 能看到连续事件，事件顺序与终止事件正确
+- [x] 中断客户端后，上游连接在 1s 内关闭（实测 `dur_ms=1006`，日志记 `client_canceled`）
+- [x] 流式合成不再整段缓冲，首字节 < 非流式的 50%（mp3 0.92 s / pcm 0.77 s vs wav 3.48 s）
+- [x] 事件名与 OpenAI 官方文档一致（`transcript.text.*` / `speech.audio.*`，已核对官方 streaming-events 页面）
 
-**风险**：base64 分片可能跨 chunk 断裂。若不能独立解码，需要维护解码缓冲，不能直接透传。
+**风险**：已消除。实测分片可独立解码（14/14），直接逐片透传即可；但 `wav` 的每片都是独立完整 WAV 文件，拼接后非法，因此 wav 改为上游非流式整段下发。
 
 ## M4 — 加固与发布（复杂度 M）
 

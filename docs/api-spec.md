@@ -79,7 +79,7 @@
 | `prompt` | string | 否 | 忽略 | 上游无此能力，仅记长度，回 `prompt-ignored` |
 | `temperature` | number | 否 | 忽略 | 上游无采样控制，回 `temperature-ignored` |
 | `timestamp_granularities[]` | string[] | 否 | 部分 | `segment` 接受但无输出；`word` 返回 400 |
-| `stream` | bool | 否 | M3 | M1/M2 传 `true` 返回 400 |
+| `stream` | bool | 否 | 支持 | `true` 返回 SSE 增量；`verbose_json` 与流式互斥（见 2.6） |
 | 其它 | — | 否 | 忽略 | 例如 `include[]`、`chunking_strategy` |
 
 多文件（重复 `file`）不支持：只取第一个，其余忽略并记 debug 日志。
@@ -158,7 +158,31 @@ OpenAI 在纯文本响应末尾不加换行，本服务保持一致。
 | `file` | `messages[0].content[0].input_audio.data` | `data:<mime>;base64,<...>`；**不传 `format`**，避免 MIME 与 format 冲突 |
 | `language` | `asr_options.language` | 仅 `auto` / `zh` / `en` |
 | — | `messages[0].role` | 固定 `user`，只放一段音频 |
-| — | `stream` | M1/M2 固定 `false` |
+| — | `stream` | 跟随下游 `stream`；`false` 时取完整结果 |
+
+### 2.6 流式转写
+
+`stream=true` 时响应为 `text/event-stream`，事件与 OpenAI 一致：
+
+```
+event: transcript.text.delta
+data: {"type":"transcript.text.delta","delta":"你好"}
+
+event: transcript.text.delta
+data: {"type":"transcript.text.delta","delta":"，世界"}
+
+event: transcript.text.done
+data: {"type":"transcript.text.done","text":"你好，世界。","usage":{"type":"tokens","input_tokens":38,"output_tokens":16,"total_tokens":54}}
+```
+
+规则：
+
+- 上游 `delta.content` 逐片转成 `transcript.text.delta`，**不缓冲、不合并**，来一片发一片
+- 收尾固定发 `transcript.text.done`，`text` 是拼接后的完整结果，`usage` 来自上游用量帧
+- `response_format=verbose_json` 与 `stream=true` 互斥，返回 400 `unsupported_parameter`：流式没有承载时长/语言的字段
+- 上游若在流中途失败（HTTP 已 200），补发 `transcript.text.error`，事件内带 `error.code`，与 `speech.audio.error` 同构
+- 上游未发 `[DONE]` 就断开视为截断，同样走 error 事件，不会伪装成正常结束
+- 上游在响应头之前就返回 4xx/5xx 时，仍然回标准 JSON 错误（此时 SSE 尚未开始）
 
 ## 3. 语音合成 `POST /v1/audio/speech`
 
@@ -174,7 +198,7 @@ OpenAI 在纯文本响应末尾不加换行，本服务保持一致。
 | `instructions` | string | 否（音色设计必填） | 部分 | 映射为 `user` 消息；克隆模型下忽略并警告 |
 | `response_format` | string | 否 | 部分 | `mp3`（默认）/ `wav` / `pcm`；其它 400 |
 | `speed` | number | 否 | 忽略 | 非数字 400；≠ 1.0 时回 `speed-ignored` |
-| `stream_format` | string | 否 | M3 | M2 只接受 `audio`；`sse` 返回 400 |
+| `stream_format` | string | 否 | 支持 | `audio`（默认，chunked 二进制）或 `sse`；其它 400（见 3.7） |
 | 其它 | — | 否 | 忽略 | |
 
 JSON 请求体上限同样使用 `MAX_UPLOAD_BYTES`（25 MiB），主要留给音色克隆样本。
@@ -320,6 +344,48 @@ Transfer-Encoding: chunked
 | `model` | `model` | 见 3.4 |
 | — | `stream` | M2 固定 `false` |
 
+### 3.7 流式合成
+
+`stream_format` 决定音频怎么交付：
+
+| 值 | 响应 | 说明 |
+| --- | --- | --- |
+| `audio`（默认） | `Content-Type: audio/*`，chunked | 分片解码后立即写出，无结束标记 |
+| `sse` | `text/event-stream` | 分片以 base64 放进事件 |
+
+SSE 事件：
+
+```
+event: speech.audio.delta
+data: {"type":"speech.audio.delta","audio":"<base64>","response_format":"mp3"}
+
+event: speech.audio.done
+data: {"type":"speech.audio.done","usage":{"type":"tokens","input_tokens":138,"output_tokens":15,"total_tokens":153}}
+```
+
+中途失败时以 error 事件收尾，替代 done：
+
+```
+event: speech.audio.error
+data: {"type":"speech.audio.error","error":{"message":"...","type":"api_error","param":null,"code":"upstream_bad_response"}}
+```
+
+上游策略（2026-10-28 实测）：
+
+| 下游格式 | 上游 `stream` | 原因 |
+| --- | --- | --- |
+| `mp3` | `true` | 分片是连续 MPEG 帧，可拼接，逐片透传 |
+| `pcm` | `true` | 无文件头，天然可拼接 |
+| `wav` | `false` | **每个分片都是独立完整的 WAV 文件**，拼接后不是合法音频，只能整段取回 |
+
+- 分片可独立 base64 解码（实测 14/14 全部成功），因此不做跨片解码缓冲
+- `voicedesign` / `voiceclone` 的流式是单片的降级模式，适配层照样只发一个 delta
+- 二进制模式不设置 `Content-Length`，走 chunked
+- 客户端断开立即取消上游请求，日志记 `client_canceled`，不算上游故障
+- 响应头等到第一片音频到达才发出：上游若此前就报错，仍能返回标准 JSON 错误
+
+实测首字节（同一句话，约 5.6 秒音频）：mp3 0.92 s、pcm 0.77 s，整段下发的 wav 为 3.48 s。
+
 ## 4. 辅助端点
 
 ### 4.1 `GET /v1/models`
@@ -365,7 +431,7 @@ Transfer-Encoding: chunked
 | 400 | `invalid_request_error` | `text_too_long` | 超过 `MAX_TTS_CHARS` | 拆分文本 |
 | 400 | `invalid_request_error` | `missing_instructions` | 音色设计缺 `instructions` | 补字段 |
 | 400 | `invalid_request_error` | `unsupported_response_format` | 请求 srt/vtt/opus/aac/flac | 换格式 |
-| 400 | `invalid_request_error` | `unsupported_parameter` | 参数组合非法（如 voicedesign + voice、M2 的 `sse`、M1 的 `stream=true`） | 去掉该参数 |
+| 400 | `invalid_request_error` | `unsupported_parameter` | 参数组合非法（如 voicedesign + voice、`stream=true` + `verbose_json`、未知的 `stream_format`） | 去掉或改正该参数 |
 | 400 | `invalid_request_error` | `model_not_found` | 未知模型 | 换模型 |
 | 400 | `invalid_request_error` | `voice_not_found` | 未知音色 | 换音色 |
 | 400 | `invalid_request_error` | `missing_voice` | 克隆模型未提供 `voice` | 补字段 |
@@ -382,6 +448,7 @@ Transfer-Encoding: chunked
 | 502 | `api_error` | `upstream_bad_response` | 上游 200 但结构不可解析，或上游 404（`MIMO_BASE_URL` 配错） | 反馈；404 时检查上游地址 |
 | 502 | `api_error` | `upstream_truncated` | `finish_reason=length` | 拆分输入后重试 |
 | 504 | `api_error` | `upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 稍后重试或缩短输入 |
+| 499 | `api_error` | `client_closed_request` | 客户端在流完成前断开 | 通常写不出去，仅用于日志与指标 |
 
 `upstream_invalid_request` 用 502 而不是 400：请求是我们翻译后发出去的，上游拒绝说明映射有问题，不是客户端写错了。
 
@@ -407,6 +474,10 @@ Transfer-Encoding: chunked
 | 不支持输出 `opus` / `aac` / `flac` | 部分客户端默认要 opus | 400 + 明确提示 |
 | 错误文案可能为中文 | 客户端日志可读性 | `code` 已归一化，按 `code` 判断 |
 | `/v1/models` 不含别名 | 下拉框只显示原生模型 | 别名仍可用 |
+| `duration` 是整数秒 | 与 OpenAI 的浮点 `duration` 有差异 | 直接透传上游 `usage.seconds` |
+| 流式 `wav` 不是真流式 | `stream_format=audio` + `wav` 会整段返回 | 上游分片是独立 WAV 文件，拼接非法；要低延迟请用 `mp3` / `pcm` |
+| `voicedesign` / `voiceclone` 流式为单片降级 | 这两个模型拿不到流式低延迟收益 | 事件形态仍正确，客户端无需特判 |
+| `stream=true` 不支持 `verbose_json` | 该组合 400 | 流式没有承载时长/语言的字段 |
 
 ## 7. 上游契约快照
 
@@ -480,7 +551,22 @@ Transfer-Encoding: chunked
 }
 ```
 
-流式（`stream=true`）时音频在 `choices[0].delta.audio.data`，每片都是 base64 片段；`audio.format` 不传时默认 `pcm`。
+流式（`stream=true`）时音频在 `choices[0].delta.audio.data`，每片都是可独立解码的 base64 片段；`audio.format` 不传时默认 `pcm`。
+
+流式响应的事件序列（实测，TTS）：
+
+```
+data: {"choices":[{"delta":{"role":"assistant","audio":null}}]}
+
+data: {"choices":[{"delta":{"audio":{"id":"...","data":"<base64>"}}}]}
+...共 N 片，每片长度均为 4 的倍数...
+
+data: {"choices":[{"delta":{"audio":null},"finish_reason":"stop"}]}
+data: {"choices":[],"usage":{"prompt_tokens":134,"completion_tokens":31,"total_tokens":165}}
+data: [DONE]
+```
+
+转写的流式结构同形：首帧只给 `role`，中间逐片 `delta.content`，末尾 `finish_reason=stop`，随后是用量帧与 `[DONE]`。
 
 ## 8. 实测结论
 
@@ -494,7 +580,7 @@ Transfer-Encoding: chunked
 | Q2 | `pcm16` 参数 | 24000 Hz / 16-bit / 单声道 / 小端，与 wav 一致 | 已写入 3.3 |
 | Q3 | 文本上限 | 760 字可正常合成（耗时 74.7 s，输出 1.9 MB mp3），未触及上限 | `MAX_TTS_CHARS` 保守保留 |
 | Q4 | ASR 时长上限 | 未测（仅验证 2.56 s 样本） | M3 前补 |
-| Q5 | 流式分片独立解码 | 未测 | M3 必测 |
+| Q5 | 流式分片独立解码 | **可独立解码**：TTS 抓 14 片全部成功，长度均为 4 的倍数；wav 分片则是各自独立的完整 WAV 文件 | 已按逐片透传实现；wav 改走非流式 |
 | Q6 | 并发与 429 | 未测 | M3 |
 | Q7 | `finish_reason=length` 触发条件 | 未测 | M3 |
 
@@ -506,6 +592,11 @@ Transfer-Encoding: chunked
 - **生成耗时随文本线性增长**：约 20 字 ≈ 2 s，760 字 ≈ 75 s。默认 180 s 超时对超长文本可能偏紧，调大 `MIMO_TIMEOUT` 可缓解。
 - **`instructions` 对普通 TTS 生效**：作为 `user` 消息下发后，未出现 `instructions-ignored` 警告。
 - **`user` 空消息不是克隆的必需条件**：不带 `user` 消息的克隆请求同样 200。
+- **流式音频分片可独立 base64 解码**，但 `wav` 的每片都是完整 WAV 文件（`riffSize == len-8`），拼接后无法播放。
+- **流式必有 `[DONE]`**：tts / wav / mp3 / voicedesign / voiceclone / asr 六种流全部以 `data: [DONE]` 收尾，因此把「没有 `[DONE]` 的 EOF」判为截断是安全的。
+- **voicedesign / voiceclone 的流式是单片降级**：一次推理完再一次性返回一片，拿不到低延迟收益。
+- **流式首字节**：mp3 0.92 s、pcm 0.77 s，非流式 wav 3.48 s（同一句话，约 5.6 秒音频）。
+- **客户端断开**：上游连接随 context 立即释放（实测 `dur_ms≈1006`），`upstream_status` 保持 0，不算上游故障。
 
 ### 8.3 已知不兼容的上游
 

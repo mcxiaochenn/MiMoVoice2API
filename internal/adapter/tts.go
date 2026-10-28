@@ -18,6 +18,10 @@ const (
 	ContentTypeMP3 = "audio/mpeg"
 	ContentTypeWAV = "audio/wav"
 	ContentTypePCM = "audio/pcm"
+
+	// StreamFormatAudio 输出 chunked 二进制，StreamFormatSSE 输出 speech.audio.* 事件。
+	StreamFormatAudio = "audio"
+	StreamFormatSSE   = "sse"
 )
 
 // SpeechInput 是 httpapi 解析后的合成请求。
@@ -34,7 +38,9 @@ type SpeechInput struct {
 // SpeechPlan 是映射结果：上游请求 + 响应所需的元信息。
 type SpeechPlan struct {
 	Request        mimo.ChatRequest
+	ResponseFormat string
 	ContentType    string
+	StreamFormat   string
 	ModelRequested string
 	ModelUpstream  string
 	Warnings       []string
@@ -57,7 +63,8 @@ func BuildSpeech(in SpeechInput, defaultModel string, maxChars int) (*SpeechPlan
 		return nil, formatErr
 	}
 
-	if streamErr := validateStreamFormat(in.StreamFormat); streamErr != nil {
+	streamFormat, streamErr := normalizeStreamFormat(in.StreamFormat)
+	if streamErr != nil {
 		return nil, streamErr
 	}
 
@@ -131,12 +138,16 @@ func BuildSpeech(in SpeechInput, defaultModel string, maxChars int) (*SpeechPlan
 		Model:    model,
 		Messages: messages,
 		Audio:    audioOptions,
-		Stream:   false,
+		// wav 的每个流式分片都是独立完整的 WAV 文件，拼接后不是合法音频，
+		// 所以 wav 固定走上游非流式；mp3 / pcm 走流式以降低首字节延迟。
+		Stream: format != SpeechFormatWAV,
 	}
 
 	return &SpeechPlan{
 		Request:        request,
+		ResponseFormat: format,
 		ContentType:    contentType,
+		StreamFormat:   streamFormat,
 		ModelRequested: strings.TrimSpace(in.Model),
 		ModelUpstream:  model,
 		Warnings:       warnings,
@@ -174,21 +185,18 @@ func normalizeSpeechFormat(raw string) (format string, contentType string, err *
 	}
 }
 
-func validateStreamFormat(raw string) *Error {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "audio":
-		return nil
-	case "sse":
-		return &Error{
-			Code:    "unsupported_parameter",
-			Param:   "stream_format",
-			Message: "stream_format \"sse\" is not supported yet; use \"audio\" (planned for M3)",
-		}
+// normalizeStreamFormat 决定音频如何交付：二进制流还是 SSE 事件。
+func normalizeStreamFormat(raw string) (string, *Error) {
+	switch value := strings.ToLower(strings.TrimSpace(raw)); value {
+	case "", StreamFormatAudio:
+		return StreamFormatAudio, nil
+	case StreamFormatSSE:
+		return StreamFormatSSE, nil
 	default:
-		return &Error{
+		return "", &Error{
 			Code:    "unsupported_parameter",
 			Param:   "stream_format",
-			Message: "stream_format must be \"audio\"",
+			Message: fmt.Sprintf("stream_format %q is not supported; use \"audio\" or \"sse\"", value),
 		}
 	}
 }
