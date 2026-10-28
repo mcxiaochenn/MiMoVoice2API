@@ -2,7 +2,7 @@
 
 ## 1. 目标态目录树
 
-标注为该目录出现的里程碑；M0 阶段只有 `docs/`、`README.md`、`AGENTS.md`、`.gitignore`、`.env.example`。
+标注为该目录出现的里程碑；M1 已落地 `cmd/`、`internal/` 与 Docker 文件，M2/M3 的文件尚未创建。
 
 ```text
 MiMoVoice2API/
@@ -38,7 +38,8 @@ MiMoVoice2API/
 │   │   ├── asr.go                M1   纯映射
 │   │   ├── tts.go                M2
 │   │   ├── model.go              M1   模型别名
-│   │   └── voice.go              M2   音色别名与克隆样本判定
+│   │   ├── voice.go              M2   音色别名与克隆样本判定
+│   │   └── errors.go             M1   字段级错误类型
 │   ├── mimo/
 │   │   ├── client.go             M1   HTTP 客户端、状态码分类、错误构造
 │   │   ├── types.go              M1   上游请求/响应结构

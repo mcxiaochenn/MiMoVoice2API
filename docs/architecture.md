@@ -1,6 +1,6 @@
 # 架构设计
 
-> 描述目标态（M1–M3）。当前仓库处于 M0，只有文档，没有可运行代码。
+> 描述目标态（M1–M3）。当前处于 M1：转写非流式已实现，合成与流式仍是设计。
 
 ## 1. 目标
 
@@ -165,9 +165,9 @@ httpapi 输出 {"error": {...}}，并写 X-Request-ID
 
 | 上游情况 | 下游响应 | 理由 |
 | --- | --- | --- |
-| 400 / 422 参数错误 | 400 `upstream_invalid_request` | 多数是我们的映射 bug，消息保留上游原文便于定位 |
+| 400 / 422 参数错误 | 502 `upstream_invalid_request` | 多数是我们的映射 bug，消息保留上游原文便于定位 |
 | 401 / 403 | 502 `upstream_auth_error` | 透传 401 会让客户端误以为自己的 token 失效 |
-| 404 模型不存在 | 400 `model_not_found` | 对客户端是请求错误 |
+| 404（通常是 `MIMO_BASE_URL` 配错） | 502 `upstream_bad_response` | 对客户端不是参数错误，属于部署问题 |
 | 429 | 429 `rate_limited` + `Retry-After` | 背压交给客户端 |
 | 5xx | 502 `upstream_error` | 网关语义 |
 | 超时 / 连接失败 | 504 `upstream_timeout` / 502 `upstream_unreachable` | 区分可重试与不可达 |

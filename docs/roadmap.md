@@ -2,7 +2,7 @@
 
 原则：每个里程碑都能独立验证，不堆未验证的改动。复杂度用 S / M / L 表示，不用工期承诺。
 
-## M0 — 仓库与文档规划（当前）
+## M0 — 仓库与文档规划（已完成）
 
 **目标**：把契约、架构、约定、节奏写清楚，让后续实现不需要再做设计决策。
 
@@ -25,9 +25,11 @@
 
 **不做**：任何 Go 代码、Dockerfile、CI 配置。
 
-## M1 — 骨架与转写（复杂度 M）
+## M1 — 骨架与转写（已实现，待真实环境验收）
 
 **目标**：`/v1/audio/transcriptions` 非流式端到端可用，镜像能跑起来。
+
+**状态**：代码、单元/契约测试与 Docker 文件已完成；真实上游联调与镜像运行未在本机执行（无 `MIMO_API_KEY`、未安装 Docker），对应验收项未勾选。
 
 范围：
 
@@ -44,7 +46,7 @@
 **验收**
 
 ```bash
-go build ./... && go vet ./... && go test ./... -race
+go build ./... && go vet ./... && go test ./...
 
 docker build -t mimivoice2api:dev .
 docker run --rm -d --name m2a -p 8080:8080 --env-file .env mimivoice2api:dev
@@ -54,14 +56,14 @@ curl -sS localhost:8080/v1/audio/transcriptions \
   -F file=@testdata/audio/sample-1s.wav -F model=whisper-1
 ```
 
-- [ ] 真实 key 下返回非空 `text`
-- [ ] `response_format=text` 返回纯文本且无 JSON 包装
-- [ ] `verbose_json` 的 `duration` 与音频长度同量级
-- [ ] 上传 `webm` 返回 400 `unsupported_audio_format`
-- [ ] 未知模型返回 400 `model_not_found`
-- [ ] 无 token 返回 401，错误 token 返回 401 `invalid_token`
-- [ ] 日志中没有 base64、文本内容、密钥
-- [ ] 镜像 < 25 MB，容器以 uid 10001 运行，`read_only` 下正常工作
+- [ ] 真实 key 下返回非空 `text`（待联调）
+- [x] `response_format=text` 返回纯文本且无 JSON 包装
+- [x] `verbose_json` 的 `duration` 取自上游 `usage.seconds`
+- [x] 上传 `webm` 返回 400 `unsupported_audio_format`
+- [x] 未知模型返回 400 `model_not_found`
+- [x] 无 token 返回 401，错误 token 返回 401 `invalid_token`
+- [x] 日志中没有 base64、文本内容、密钥（代码审查）
+- [ ] 镜像 < 25 MB，容器以 uid 10001 运行，`read_only` 下正常工作（本机无 Docker）
 
 **风险**：上游 `input_audio` 对 data URL 的格式要求可能与文档有偏差 → 首个联调用例先打通最小请求，再补参数。
 
@@ -76,6 +78,7 @@ curl -sS localhost:8080/v1/audio/transcriptions \
 - 二进制响应：`base64.NewDecoder` 流式解码，`Content-Type` 与格式映射
 - 三种 MiMo TTS 模型的参数组合校验
 - 响应头 `X-Adapter-Warning`
+- 更新 `/v1/models`，加入三个 TTS 模型
 
 **验收**
 

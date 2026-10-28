@@ -12,11 +12,12 @@
 
 ## 2. 当前阶段闸门
 
-**M0（文档阶段）**：除 Markdown、`.gitignore`、`.env.example` 外，不新增任何文件。
+**M1（转写）已实现，M2（合成）未开始。**
 
-- 不要创建 `go.mod`、`*.go`、`Dockerfile`、`docker-compose.yml` —— 它们属于 M1
-- 文档中的接口定义必须先于代码存在
-- 进入 M1 的信号：用户明确说「开始实现」或「做 M1」
+- 可以修改 M1 已有代码与文档，但不要提前实现 `/v1/audio/speech`
+- 不要实现 `stream` / `stream_format`，流式属于 M3
+- 新增或改变对外行为，先改 [docs/api-spec.md](docs/api-spec.md)，再改代码
+- 进入 M2 的信号：用户明确说「做 M2」或「实现语音合成」
 
 ## 3. 硬性约束（不要做）
 
@@ -60,12 +61,10 @@ cmd/mimivoice2api  →  internal/httpapi  →  internal/adapter  →  internal/m
 
 ## 6. 命令
 
-M1 起可用：
-
 ```bash
 go build ./...
 go vet ./...
-go test ./... -race
+go test ./...
 gofmt -l .
 
 docker build -t mimivoice2api:dev .
@@ -74,6 +73,8 @@ docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
 curl -sS localhost:8080/healthz
 curl -sS localhost:8080/v1/models -H "Authorization: Bearer $AUTH_TOKEN"
 ```
+
+`-race` 需要 CGO 与 gcc；本机没有编译器时不要把它当成本地门槛，交给 CI。
 
 冒烟测试用 `testdata/audio/` 下的合成音频，不要提交真实人声。
 
@@ -88,7 +89,7 @@ curl -sS localhost:8080/v1/models -H "Authorization: Bearer $AUTH_TOKEN"
 
 一个改动只有同时满足以下条件才算完成：
 
-1. `go build ./...`、`go vet ./...`、`go test ./... -race` 全绿
+1. `go build ./...`、`go vet ./...`、`go test ./...` 全绿（CI 另跑 `-race`）
 2. 新增行为有对应测试；映射逻辑有表驱动用例
 3. 日志中没有音频、base64、转写文本、密钥
 4. 相关文档已更新，链接可达

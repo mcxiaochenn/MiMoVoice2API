@@ -16,7 +16,7 @@
 | 头 | 方向 | 说明 |
 | --- | --- | --- |
 | `Authorization` | 入 | 下游 token，可选（取决于配置） |
-| `X-Request-ID` | 入/出 | 合法（≤64 可见 ASCII）则复用，否则生成；始终回写 |
+| `X-Request-ID` | 入/出 | 不超过 64 位且仅含字母、数字、`-`、`_`、`.` 时复用，否则生成；始终回写 |
 | `X-Adapter-Warning` | 出 | 降级提示，分号分隔的 ASCII token，见 1.5 |
 | `Cache-Control` | 出 | 固定 `no-store` |
 
@@ -319,19 +319,18 @@ Transfer-Encoding: chunked
 
 ### 4.1 `GET /v1/models`
 
-只列 MiMo 原生模型 ID，别名可接受但不列出：
+只列**已实现**的模型，别名可接受但不列出。M1 只有转写：
 
 ```json
 {
   "object": "list",
   "data": [
-    { "id": "mimo-v2.5-asr", "object": "model", "created": 0, "owned_by": "xiaomi" },
-    { "id": "mimo-v2.5-tts", "object": "model", "created": 0, "owned_by": "xiaomi" },
-    { "id": "mimo-v2.5-tts-voicedesign", "object": "model", "created": 0, "owned_by": "xiaomi" },
-    { "id": "mimo-v2.5-tts-voiceclone", "object": "model", "created": 0, "owned_by": "xiaomi" }
+    { "id": "mimo-v2.5-asr", "object": "model", "created": 0, "owned_by": "xiaomi" }
   ]
 }
 ```
+
+M2 上线语音合成后，再加入 `mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesign`、`mimo-v2.5-tts-voiceclone`。不提前列出会返回 404 的模型。
 
 `created` 固定 `0`：这些模型没有可靠的发布时间，不编造。
 
@@ -371,7 +370,7 @@ Transfer-Encoding: chunked
 | 502 | `api_error` | `upstream_invalid_request` | 上游 400/422 | 反馈，属于映射缺陷 |
 | 502 | `api_error` | `upstream_auth_error` | 上游 401/403 | 运维检查 `MIMO_API_KEY` |
 | 502 | `api_error` | `upstream_unreachable` | 连接失败 / DNS 失败 | 稍后重试 |
-| 502 | `api_error` | `upstream_bad_response` | 上游 200 但结构不可解析 | 反馈 |
+| 502 | `api_error` | `upstream_bad_response` | 上游 200 但结构不可解析，或上游 404（`MIMO_BASE_URL` 配错） | 反馈；404 时检查上游地址 |
 | 502 | `api_error` | `upstream_truncated` | `finish_reason=length` | 拆分输入后重试 |
 | 504 | `api_error` | `upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 稍后重试或缩短输入 |
 

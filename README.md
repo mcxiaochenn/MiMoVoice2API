@@ -2,7 +2,7 @@
 
 把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
 
-> **当前状态：M0（规划）**。仓库里目前只有文档，没有可执行代码，也没有发布镜像。
+> **当前状态：M1（转写可用）**。已实现非流式语音转写、模型列表与健康检查，附带 Dockerfile / Compose；语音合成（M2）、流式（M3）与 GHCR 镜像发布（M4）尚未完成。
 > 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 为什么需要它
@@ -120,14 +120,17 @@ speech.write_to_file("out.mp3")
 
 ## 开发
 
-M1 起可用：
+本地运行（Docker 之外不会自动读 `.env`，直接给环境变量）：
 
 ```bash
-go run ./cmd/mimivoice2api
+MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token go run ./cmd/mimivoice2api
+
 go vet ./...
-go test ./... -race
+go test ./...
 gofmt -l .
 ```
+
+`go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行。
 
 本机没有 `MIMO_API_KEY` 时，测试全程使用 `httptest` 假上游，不访问真实网络。
 
