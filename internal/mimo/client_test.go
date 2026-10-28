@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -134,6 +135,70 @@ func TestRetryOnlyOnce(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("calls = %d, want 2 (one retry only)", calls)
+	}
+}
+
+// 等待 Retry-After 期间客户端取消：应返回取消错误，而不是残留的上游 429 错误。
+func TestRetryWaitCancelReturnsCanceled(t *testing.T) {
+	got429 := make(chan struct{}, 1)
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error": {"message": "slow down"}}`)
+		select {
+		case got429 <- struct{}{}:
+		default:
+		}
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.Transcribe(ctx, ChatRequest{Model: "mimo-v2.5-asr"})
+		errCh <- err
+	}()
+
+	<-got429
+	cancel()
+	err := <-errCh
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindCanceled {
+		t.Fatalf("error = %v, want canceled", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("calls = %d, want 1 (取消后不得再发起重试)", got)
+	}
+}
+
+// 等待 Retry-After 期间 context 超时：应返回超时错误并停止重试。
+func TestRetryWaitDeadlineReturnsTimeout(t *testing.T) {
+	var calls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Transcribe(ctx, ChatRequest{Model: "mimo-v2.5-asr"})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindTimeout {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("calls = %d, want 1 (超时后不得再发起重试)", got)
 	}
 }
 

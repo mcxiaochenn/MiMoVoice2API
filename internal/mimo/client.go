@@ -177,8 +177,10 @@ func (c *Client) send(ctx context.Context, req ChatRequest, accept string) (*htt
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			// 等待期间调用方取消或超时：返回取消语义的错误，
+			// 而不是把这次放弃误报成上游限流，否则指标与日志会错怪上游。
 			timer.Stop()
-			return nil, upstreamErr
+			return nil, classifyTransportError(ctx.Err())
 		case <-timer.C:
 		}
 	}
