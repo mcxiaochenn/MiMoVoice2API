@@ -52,7 +52,7 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 
 ## 快速开始
 
-镜像随 tag 发布到 GHCR（`linux/amd64` 与 `linux/arm64`）：
+镜像已发布到 GHCR（`linux/amd64` 与 `linux/arm64`，tag `1.0.0` / `1.0` / `latest`，可匿名拉取）：
 
 ```bash
 docker run -d --name mimivoice2api \
