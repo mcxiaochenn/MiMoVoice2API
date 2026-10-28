@@ -382,6 +382,7 @@ data: {"type":"speech.audio.error","error":{"message":"...","type":"api_error","
 - 分片可独立 base64 解码（实测 14/14 全部成功），因此不做跨片解码缓冲
 - `voicedesign` / `voiceclone` 的流式是单片的降级模式，适配层照样只发一个 delta
 - 二进制模式不设置 `Content-Length`，走 chunked
+- 二进制模式一旦写出音频，再遇到上游中断就只能断开连接（不追加 JSON），客户端应把不完整下载判为失败；SSE 模式此时会补一个 `speech.audio.error` 事件
 - 客户端断开立即取消上游请求，日志记 `client_canceled`，不算上游故障
 - 响应头等到第一片音频到达才发出：上游若此前就报错，仍能返回标准 JSON 错误
 

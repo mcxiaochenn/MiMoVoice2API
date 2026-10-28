@@ -178,6 +178,9 @@ httpapi 输出 {"error": {...}}，并写 X-Request-ID
 - 上游 `message` 截断到 512 字符再返回，防止超长 HTML 错误页灌进客户端。
 - 任何情况下都不回显 `MIMO_API_KEY`、请求头、音频内容。
 - 未捕获 panic 由 recover 中间件转 500 `internal_error`，堆栈只进日志。
+- 流式响应一旦发出就无法再改状态码：SSE 用 `*.error` 事件收尾；二进制音频模式已经写出字节时，
+  主动 `panic(http.ErrAbortHandler)` 断开连接，绝不再追加 JSON（否则会被当成音频数据）。
+  recover 中间件对 `ErrAbortHandler` 原样透传，访问日志用 defer 记录，保证中止请求仍可观测。
 
 ## 10. 日志与可观测性
 
