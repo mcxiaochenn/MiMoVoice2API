@@ -50,7 +50,8 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          # 固定小写镜像名：仓库名含大写字母，直接拼 github.repository 可能不合法
+          images: ghcr.io/mcxiaochenn/mimivoice2api
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
