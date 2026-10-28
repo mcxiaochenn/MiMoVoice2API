@@ -210,6 +210,7 @@ data: {"type":"transcript.text.done","text":"你好，世界。","usage":{"type"
 | 其它 | — | 否 | 忽略 | |
 
 JSON 请求体上限同样使用 `MAX_UPLOAD_BYTES`（25 MiB），主要留给音色克隆样本。
+请求体必须是**单个** JSON 对象：尾随第二个对象或垃圾数据都会返回 400 `invalid_json`（对象后的空白字符除外）。
 
 缺 `voice` 时的行为按模型区分：普通合成回落 `mimo_default` 并回 `voice-defaulted`；音色设计不传该字段；音色克隆必须提供，否则 400 `missing_voice`。
 
@@ -485,7 +486,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 
 | HTTP | `type` | `code` | 触发条件 | 客户端应对 |
 | --- | --- | --- | --- | --- |
-| 400 | `invalid_request_error` | `invalid_json` | body 不是合法 JSON | 修请求 |
+| 400 | `invalid_request_error` | `invalid_json` | body 不是合法 JSON，或尾随第二个对象 / 垃圾数据 | 修请求 |
 | 400 | `invalid_request_error` | `invalid_multipart` | multipart 解析失败 | 修请求 |
 | 400 | `invalid_request_error` | `missing_file` | 没有 `file` 字段 | 补字段 |
 | 400 | `invalid_request_error` | `empty_file` | 音频为 0 字节 | 修请求 |

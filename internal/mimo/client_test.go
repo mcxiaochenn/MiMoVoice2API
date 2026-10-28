@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -405,5 +406,91 @@ func TestSynthesizeStreamNormalFinish(t *testing.T) {
 	}
 	if result.Chunks != 1 || result.FinishReason != "stop" {
 		t.Errorf("result = %+v", result)
+	}
+}
+
+// 上游响应尾随第二个 JSON 对象：必须报 bad_response，而不是悄悄取第一个。
+func TestPostRejectsSecondJSONValue(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"finish_reason":"stop","message":{"content":"先到"}}]}{"choices":[]}`)
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	_, _, err := client.post(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindBadResponse {
+		t.Fatalf("error = %v, want bad response", err)
+	}
+}
+
+// 上游响应尾随垃圾数据：同样报 bad_response。
+func TestPostRejectsTrailingGarbage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]} trailing`)
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	_, _, err := client.post(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindBadResponse {
+		t.Fatalf("error = %v, want bad response", err)
+	}
+}
+
+// 上游响应超过大小限制：报「超限」而不是含糊的 JSON 解析错误。
+func TestPostRejectsOversizedResponse(t *testing.T) {
+	huge := `{"choices":[{"finish_reason":"stop","message":{"content":"x"}}],"pad":"` +
+		strings.Repeat("a", maxResponseBytes) + `"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, huge)
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 30*time.Second)
+	_, _, err := client.post(context.Background(), ChatRequest{Model: "mimo-v2.5-tts"})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindBadResponse {
+		t.Fatalf("error = %v, want bad response", err)
+	}
+	if !strings.Contains(upstreamErr.Message, "exceeds") {
+		t.Errorf("message = %q, want size limit hint", upstreamErr.Message)
+	}
+}
+
+// 上游响应整体不是 JSON。
+func TestPostRejectsInvalidJSON(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `<html>gateway error</html>`)
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	_, _, err := client.post(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindBadResponse {
+		t.Fatalf("error = %v, want bad response", err)
+	}
+}
+
+// 合法响应尾随空白字符不算尾随数据。
+func TestPostAcceptsTrailingWhitespace(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"ok\"}}]}\n\n  ")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	out, _, err := client.post(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"})
+	if err != nil {
+		t.Fatalf("post error = %v", err)
+	}
+	if out.Choices[0].Message.Content != "ok" {
+		t.Errorf("content = %q", out.Choices[0].Message.Content)
 	}
 }

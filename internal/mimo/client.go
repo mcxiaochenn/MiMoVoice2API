@@ -245,6 +245,8 @@ func parseRetryAfter(raw string) (time.Duration, bool) {
 }
 
 // post 在 send 基础上解码非流式响应。
+// 用 ReadAll + Unmarshal 而不是流式 Decoder：前者能区分「响应超限」与
+// 「JSON 非法」，并且天然拒绝尾随的第二个对象或垃圾数据。
 func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int, error) {
 	resp, err := c.send(ctx, req, "application/json")
 	if err != nil {
@@ -256,8 +258,24 @@ func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int,
 	}
 	defer resp.Body.Close()
 
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, resp.StatusCode, &Error{
+			Kind:       KindBadResponse,
+			StatusCode: resp.StatusCode,
+			Message:    "failed to read upstream response: " + err.Error(),
+		}
+	}
+	if len(raw) > maxResponseBytes {
+		return nil, resp.StatusCode, &Error{
+			Kind:       KindBadResponse,
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("upstream response exceeds %d bytes", maxResponseBytes),
+		}
+	}
+
 	var out ChatResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, resp.StatusCode, &Error{
 			Kind:       KindBadResponse,
 			StatusCode: resp.StatusCode,

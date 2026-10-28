@@ -18,8 +18,9 @@ func (s *server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 	info := requestInfoFrom(r.Context())
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes)
+	dec := json.NewDecoder(r.Body)
 	var req speechRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			s.writeAPIError(w, r, newAPIError(
@@ -29,6 +30,15 @@ func (s *server) handleSpeech(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeAPIError(w, r, newAPIError("invalid_json", "", "request body must be a JSON object"))
+		return
+	}
+	// 请求体必须是单个 JSON 对象：尾随的第二个对象或垃圾数据都拒绝，
+	// 否则不同解析器会对「哪个对象生效」产生分歧。
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		s.writeAPIError(w, r, newAPIError(
+			"invalid_json", "",
+			"request body must contain a single JSON object",
+		))
 		return
 	}
 
