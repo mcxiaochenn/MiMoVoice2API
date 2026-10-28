@@ -44,6 +44,7 @@ var errorSpecs = map[string]errorSpec{
 	"method_not_allowed":          {http.StatusMethodNotAllowed, "invalid_request_error"},
 	"payload_too_large":           {http.StatusRequestEntityTooLarge, "invalid_request_error"},
 	"rate_limited":                {http.StatusTooManyRequests, "rate_limit_error"},
+	"server_busy":                 {http.StatusServiceUnavailable, "api_error"},
 	"internal_error":              {http.StatusInternalServerError, "api_error"},
 	"upstream_invalid_request":    {http.StatusBadGateway, "api_error"},
 	"upstream_auth_error":         {http.StatusBadGateway, "api_error"},

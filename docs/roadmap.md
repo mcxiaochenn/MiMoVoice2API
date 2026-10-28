@@ -166,6 +166,25 @@ curl -sS localhost:8080/v1/audio/speech \
 > 压测条件：本地二进制 + `httptest` 之外的独立假上游（127.0.0.1），假上游固定 50 ms 延迟，1 MiB WAV，`xargs -P 10`。
 > 结论只反映适配层自身的并发与内存行为，不代表真实上游的限流表现。
 
+## v1.0.0 之后的加固（2026-10-28，维护态）
+
+一次针对协议正确性、资源安全与生产可靠性的修复，无新端点，详见对应 PR：
+
+| 修复 | 内容 |
+| --- | --- |
+| 流式截断 | `finish_reason=length` 一律按失败处理，不再发送 `*.done`；error 事件 / 中止连接语义与非流式统一 |
+| 并发准入 | 新增 `MAX_CONCURRENT_REQUESTS`（默认 4），超限 503 `server_busy`；`/healthz` 不占额度 |
+| 429 取消 | 等待 `Retry-After` 期间取消/超时返回取消语义错误，不再误报上游限流 |
+| 无鉴权监听 | `AUTH_TOKEN` 为空强制回环监听，非回环地址拒绝启动（行为变化） |
+| 上游 URL 校验 | `MIMO_BASE_URL` 必须以 `/v1` 收尾，拒绝 query / fragment / userinfo |
+| JSON 边界 | 请求体尾随数据拒绝；上游响应区分超限 / 尾随 / 非法 |
+| 测试补强 | SSE Fuzz、嗅探与克隆样本边界、并发释放路径 |
+| 兼容性 | 新增 `gpt-transcribe` 等别名；对照 OpenAI 官方文档核实模型名与弃用时间表 |
+| 开源 | 采用 MIT License；README 按成熟开源项目结构重写 |
+
+仍需真实环境验证：`finish_reason=length` 的实际触发条件（Q7）、上游并发与真实 429 行为（Q6）、
+24h 空跑内存稳定性、arm64 实机运行。
+
 ## 依赖关系
 
 ```text

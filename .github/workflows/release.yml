@@ -127,6 +127,7 @@ jobs:
             -ldflags "-s -w -X main.version=${TAG} -X main.commit=${GITHUB_SHA}" \
             -o "dist/${name}/mimivoice2api" ./cmd/mimivoice2api
           cp README.md "dist/${name}/README.md"
+          cp LICENSE "dist/${name}/LICENSE"
           if [ "$GOOS" = "windows" ]; then
             mv "dist/${name}/mimivoice2api" "dist/${name}/mimivoice2api.exe"
             (cd dist && zip -qr "${name}.zip" "${name}")

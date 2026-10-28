@@ -21,18 +21,19 @@ var testWAV = []byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
 
 func testConfig(upstreamURL string) config.Config {
 	return config.Config{
-		MIMOAPIKey:      "test-key",
-		MIMOBaseURL:     upstreamURL,
-		MIMOASRModel:    "mimo-v2.5-asr",
-		MIMOTTSModel:    "mimo-v2.5-tts",
-		ListenAddr:      ":0",
-		AuthToken:       "secret",
-		MaxUploadBytes:  1 << 20,
-		MaxTTSChars:     1000,
-		UpstreamTimeout: 5 * time.Second,
-		LogLevel:        slog.LevelError,
-		LogFormat:       "json",
-		MetricsEnabled:  true,
+		MIMOAPIKey:            "test-key",
+		MIMOBaseURL:           upstreamURL,
+		MIMOASRModel:          "mimo-v2.5-asr",
+		MIMOTTSModel:          "mimo-v2.5-tts",
+		ListenAddr:            ":0",
+		AuthToken:             "secret",
+		MaxUploadBytes:        1 << 20,
+		MaxTTSChars:           1000,
+		MaxConcurrentRequests: 8,
+		UpstreamTimeout:       5 * time.Second,
+		LogLevel:              slog.LevelError,
+		LogFormat:             "json",
+		MetricsEnabled:        true,
 	}
 }
 

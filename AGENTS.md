@@ -116,7 +116,7 @@ Docker 构建与真实上游 key 联调属于可选项，不作为 DoD 门槛。
 ## 10. 安全与隐私
 
 - `.env` 永不入库；`.env.example` 只放占位值
-- `AUTH_TOKEN` 为空时启动打 WARN，提示仅限本机调试
+- `AUTH_TOKEN` 为空时只允许回环监听（配置阶段强制），并打 WARN；配置非回环监听直接拒绝启动
 - 鉴权比较用 `crypto/subtle.ConstantTimeCompare`
 - 上游密钥只出现在发往 MiMo 的请求头里；错误信息、日志、响应体都不得回显
 - 容器以非 root 运行，根文件系统只读，`tmpfs` 挂 `/tmp`，`cap_drop: ALL`

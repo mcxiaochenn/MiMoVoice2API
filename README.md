@@ -1,11 +1,29 @@
 # MiMoVoice2API
 
+把小米 MiMo 开放平台的语音识别（ASR）与语音合成（TTS）翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制、无状态、零第三方依赖——客户端只改 `base_url` 就能接入。
+
 [![CI](https://github.com/mcxiaochenn/MiMoVoice2API/actions/workflows/ci.yml/badge.svg)](https://github.com/mcxiaochenn/MiMoVoice2API/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mcxiaochenn/MiMoVoice2API)](https://github.com/mcxiaochenn/MiMoVoice2API/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/mcxiaochenn/MiMoVoice2API)](go.mod)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
+> **当前状态**：`v1.0.0` 已发布并处于维护态。转写、合成、流式输出、Prometheus 指标与 GHCR 多架构镜像均已可用。
+> 完整接口契约见 [docs/api-spec.md](docs/api-spec.md)，实现细节见 [docs/architecture.md](docs/architecture.md)。
 
-> **当前状态：M4（转写、合成、流式、指标与镜像发布）**。转写与合成（含 SSE / chunked 流式）、模型列表、健康检查、Prometheus 指标均已实现；tag `v*` 触发 GHCR 多架构镜像发布与二进制附件。
-> 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
+**目录**：[核心能力](#核心能力) · [为什么需要它](#为什么需要它) · [架构](#架构) · [快速开始](#快速开始) · [API 示例](#api-示例) · [配置](#配置) · [兼容性](#兼容性) · [部署与安全](#部署与安全) · [可观测性](#可观测性) · [故障排查](#故障排查) · [开发](#开发) · [文档](#文档) · [许可证](#许可证)
+
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| 🎙️ 语音转写 | `POST /v1/audio/transcriptions`，`multipart/form-data` 上传，支持 `json` / `text` / `verbose_json` |
+| 🔊 语音合成 | `POST /v1/audio/speech`，JSON 进、音频流出，输出 `mp3` / `wav` / `pcm` |
+| 🌊 流式输出 | 转写 SSE 增量文本；合成 chunked 二进制或 SSE 事件，首字节约 0.8–0.9 s |
+| 🎨 音色设计 | `mimo-v2.5-tts-voicedesign`：用 `instructions` 文字描述生成音色 |
+| 🧬 音色克隆 | `mimo-v2.5-tts-voiceclone`：上传几秒样本即可复刻音色 |
+| 🔌 OpenAI SDK 兼容 | 模型别名（`whisper-1`、`gpt-transcribe`、`tts-1` 等）、参数与事件名对齐 OpenAI Audio API |
+| 📊 可观测性 | 结构化日志 + Prometheus `/metrics`，内置零依赖指标实现 |
+| 🪶 轻量 | 单静态二进制（约 7 MB），`CGO_ENABLED=0`，无第三方 Go 依赖，无数据库、不落盘 |
 
 ## 为什么需要它
 
@@ -16,43 +34,38 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 | 语音识别 | `mimo-v2.5-asr` | 音频以 base64 data URL 塞进 `messages[].content[].input_audio`，转写结果取 `choices[0].message.content` |
 | 语音合成 | `mimo-v2.5-tts` / `-voicedesign` / `-voiceclone` | 待合成文本放在 `assistant` 消息，音频 base64 在 `choices[0].message.audio.data` |
 
-而现成生态（Open WebUI、LibreChat、Home Assistant、各家 OpenAI SDK 封装）默认只会调 `/v1/audio/*`。这个项目就是中间那层薄适配：**只做协议翻译，不做模型、不做转码、不落盘**。
+而现成生态（Open WebUI、LibreChat、Home Assistant、各家 OpenAI SDK 封装）默认只调 `/v1/audio/*`。本项目就是中间那层薄适配：**只做协议翻译，不做模型、不做转码、不落盘**。
 
-## 端点
+## 架构
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/v1/audio/transcriptions` | 语音转写，`multipart/form-data`；支持 `stream=true` SSE |
-| POST | `/v1/audio/speech` | 语音合成，JSON 进、音频流出；`stream_format=audio` / `sse` |
-| GET | `/v1/models` | 可用模型列表 |
-| GET | `/healthz` | 健康检查（含版本号），免鉴权 |
-| GET | `/metrics` | Prometheus 指标，需要鉴权 |
+```mermaid
+flowchart LR
+    SDK["OpenAI SDK / 应用"] -->|"multipart / JSON"| MW["httpapi<br/>鉴权 · 并发准入 · 限长"]
+    MW --> A["adapter<br/>纯映射 + 别名表"]
+    A --> MC["mimo.Client<br/>429 重试 · SSE 解析"]
+    MC -->|"POST /v1/chat/completions"| U["MiMo API"]
+    MC -.->|"base64 音频 / 文本"| MW
+    MW -.->|"音频流 / SSE 事件"| SDK
+```
 
-客户端 `base_url` 填 `http://<host>:8080/v1`。
-
-## 能力矩阵
-
-| OpenAI 参数 / 能力 | 支持度 | 说明 |
-| --- | --- | --- |
-| 转写 `response_format`: `json` / `text` / `verbose_json` | 支持 | `verbose_json` 不含 `segments` |
-| 转写 `response_format`: `srt` / `vtt` | 不支持 | 上游不给时间戳，直接 400 |
-| 输入音频 `mp3` / `wav` | 支持 | 上游仅此两种，按文件魔数嗅探，不看扩展名 |
-| 输入音频 `webm` / `m4a` / `ogg` / `flac` | 不支持 | 不内置 ffmpeg，明确 400 而不是静默出错 |
-| 输出音频 `mp3` / `wav` / `pcm` | 支持 | |
-| 输出音频 `opus` / `aac` / `flac` | 不支持 | 同上 |
-| `instructions`（风格提示） | 支持 | 映射为 MiMo 的 `user` 消息 |
-| `speed` | 忽略 | 上游无此参数；非 1.0 时回 `X-Adapter-Warning` |
-| `prompt` / `temperature` | 忽略 | 上游无对应能力 |
-| 流式转写 `stream=true` | 支持 | SSE：`transcript.text.delta` / `.done`；与 `verbose_json` 互斥 |
-| 流式合成 `stream_format` | 支持 | `audio`（chunked 二进制）或 `sse`（`speech.audio.delta` / `.done`） |
-| 流式 `wav` | 降级 | 上游分片是独立 WAV 文件，只能整段下发；要低延迟用 `mp3` / `pcm` |
-| 音色克隆 / 音色设计 | 支持 | 通过 `model` + `voice` / `instructions` 触发 |
-
-输出音频参数（2026-10-28 官方端点实测）：`mp3` 为 MPEG2 Layer III / 24 kHz VBR，带 Xing 头；`wav` 与 `pcm` 均为 24 kHz / 16-bit / 单声道。`pcm` 没有文件头，消费端需按这组参数解释。
+分层依赖固定为 `cmd → httpapi → adapter → mimo`，映射逻辑全部是可脱网单测的纯函数。组件职责、请求流水线、内存模型与已知坑位见 [docs/architecture.md](docs/architecture.md)。
 
 ## 快速开始
 
-镜像已发布到 GHCR（`linux/amd64` 与 `linux/arm64`，tag `1.0.0` / `1.0` / `latest`，可匿名拉取）：
+镜像已发布到 GHCR（`linux/amd64` + `linux/arm64`，tag `1.0.0` / `1.0` / `latest`，可匿名拉取）。
+
+### Docker Compose（推荐）
+
+```bash
+git clone https://github.com/mcxiaochenn/MiMoVoice2API.git && cd MiMoVoice2API
+cp .env.example .env   # 填入 MIMO_API_KEY 与 AUTH_TOKEN
+docker compose up -d
+curl -sS http://127.0.0.1:8080/healthz
+```
+
+[docker-compose.yml](docker-compose.yml) 已内置只读根文件系统、`cap_drop: ALL`、非 root 运行与日志轮转。
+
+### Docker Run
 
 ```bash
 docker run -d --name mimivoice2api \
@@ -64,38 +77,46 @@ docker run -d --name mimivoice2api \
   ghcr.io/mcxiaochenn/mimivoice2api:latest
 ```
 
-或者用 [docker-compose.yml](docker-compose.yml)（已包含只读根、cap_drop、非 root、日志轮转）：
+### 本地二进制
 
 ```bash
-cp .env.example .env   # 填入 MIMO_API_KEY 与 AUTH_TOKEN
-docker compose up -d
+go build -o bin/mimivoice2api ./cmd/mimivoice2api
+MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token LISTEN_ADDR=127.0.0.1:8080 ./bin/mimivoice2api
 ```
 
-从源码构建：
+> 本机匿名调试：`AUTH_TOKEN` 留空时**只允许回环监听**，请显式设置 `LISTEN_ADDR=127.0.0.1:8080`；
+> 配置 `:8080` / `0.0.0.0` 等非回环监听会拒绝启动（见[部署与安全](#部署与安全)）。
 
-```bash
-docker build -t mimivoice2api:dev .
-docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
-```
+服务就绪后，客户端 `base_url` 填 `http://<host>:8080/v1` 即可。
 
-OpenAI Python SDK 接入：
+## API 示例
+
+### Python（OpenAI SDK）
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local-dev-token")
 
+# 转写
 with open("sample.wav", "rb") as f:
     print(client.audio.transcriptions.create(model="whisper-1", file=f).text)
 
+# 合成：整段写文件
 speech = client.audio.speech.create(model="tts-1", voice="nova", input="你好，这是一段测试。")
 speech.write_to_file("out.mp3")
+
+# 合成：流式落盘，边收边写
+with client.audio.speech.with_streaming_response.create(
+    model="tts-1", voice="nova", input="流式合成。", response_format="pcm"
+) as resp:
+    resp.stream_to_file("out.pcm")
 ```
 
-流式：转写逐字回显，合成边收边播。
+<details>
+<summary>Python 流式转写（依赖支持流式转写的 openai SDK 版本）</summary>
 
 ```python
-# 转写：SSE 增量文本
 with open("sample.wav", "rb") as f:
     for event in client.audio.transcriptions.create(model="whisper-1", file=f, stream=True):
         if event.type == "transcript.text.delta":
@@ -104,47 +125,117 @@ with open("sample.wav", "rb") as f:
             print("\n最终:", event.text)
 ```
 
+SDK 版本较旧、不认识 `stream` 参数时，用下面的 cURL 方式消费 SSE 即可。
+
+</details>
+
+### cURL
+
 ```bash
+# 转写（json / text / verbose_json）
+curl -sS http://127.0.0.1:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -F "file=@testdata/audio/sample-1s.wav" \
+  -F "model=whisper-1" -F "language=zh" -F "response_format=verbose_json"
+
+# 转写：SSE 增量文本
+curl -sS -N http://127.0.0.1:8080/v1/audio/transcriptions \
+  -H "Authorization: Bearer $AUTH_TOKEN" \
+  -F "file=@testdata/audio/sample-1s.wav" -F "stream=true"
+
 # 合成：chunked 二进制，边收边写
-curl -sS -N localhost:8080/v1/audio/speech \
+curl -sS -N http://127.0.0.1:8080/v1/audio/speech \
   -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"voice":"nova","input":"流式合成。","response_format":"pcm"}' \
   --output out.pcm
 
 # 合成：SSE 事件
-curl -sS -N localhost:8080/v1/audio/speech \
+curl -sS -N http://127.0.0.1:8080/v1/audio/speech \
   -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"voice":"nova","input":"流式合成。","stream_format":"sse"}'
 ```
 
 ## 配置
 
-全部通过环境变量，启动时校验，缺关键项直接退出。样例见 [.env.example](.env.example)。
+全部通过环境变量配置，启动时校验，缺关键项直接退出。样例见 [.env.example](.env.example)。
 
-| 变量 | 默认值 | 说明 |
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `MIMO_API_KEY` | ✅ | 无 | 上游 API Key，只从环境变量读取，不进日志 |
+| `MIMO_BASE_URL` | — | `https://api.xiaomimimo.com/v1` | 上游地址，必须以 `/v1` 收尾（可带路径前缀）；拒绝 query / fragment / userinfo |
+| `MIMO_ASR_MODEL` | — | `mimo-v2.5-asr` | 请求未指定模型时的转写默认值 |
+| `MIMO_TTS_MODEL` | — | `mimo-v2.5-tts` | 请求未指定模型时的合成默认值 |
+| `AUTH_TOKEN` | 建议 | 空 | 下游 Bearer token；留空时不校验，**且只允许回环监听** |
+| `LISTEN_ADDR` | — | `:8080` | 监听地址；无 `AUTH_TOKEN` 时必须是回环地址 |
+| `MAX_UPLOAD_BYTES` | — | `26214400`（25 MiB） | 上传音频上限，超限 413 |
+| `MAX_TTS_CHARS` | — | `1000` | 单次合成文本字符上限 |
+| `MAX_CONCURRENT_REQUESTS` | — | `4` | 并发处理上限，超出 503 `server_busy`；`/healthz` 不占额度 |
+| `UPSTREAM_TIMEOUT` | — | `180s` | 单次上游请求总超时 |
+| `METRICS_ENABLED` | — | `true` | 是否暴露 `/metrics`，关闭后返回 404 |
+| `LOG_LEVEL` | — | `info` | `debug` / `info` / `warn` / `error` |
+| `LOG_FORMAT` | — | `json` | `json` / `text` |
+
+**默认值依据**：ASR 上传走全量缓冲，单请求峰值内存约为 `MAX_UPLOAD_BYTES` 的 4~5 倍；
+`MAX_CONCURRENT_REQUESTS=4` 时最坏约 400 MiB，适配 1 GiB 级自托管主机，内存充裕可调高。
+
+## 兼容性
+
+**模型别名只保证「存在且可用」，不等于语义或性能一致**——识别/合成效果一律以 MiMo 上游为准。
+
+| 下游 `model` | 映射到 | 备注 |
 | --- | --- | --- |
-| `MIMO_API_KEY` | 无（必填） | 上游 API Key，只从环境变量读 |
-| `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` | 上游地址，必须包含 `/v1`，便于指向代理或测试桩 |
-| `MIMO_ASR_MODEL` | `mimo-v2.5-asr` | 请求未指定模型时的转写默认值 |
-| `MIMO_TTS_MODEL` | `mimo-v2.5-tts` | 请求未指定模型时的合成默认值 |
-| `LISTEN_ADDR` | `:8080` | 监听地址 |
-| `AUTH_TOKEN` | 空 | 下游 Bearer token；留空表示不校验，仅限本机调试 |
-| `MAX_UPLOAD_BYTES` | `26214400`（25 MiB） | 上传音频上限，超限 413 |
-| `MAX_TTS_CHARS` | `1000` | 单次合成文本字符上限 |
-| `UPSTREAM_TIMEOUT` | `180s` | 单次上游请求总超时 |
-| `METRICS_ENABLED` | `true` | 是否暴露 `/metrics`；关闭后该路径返回 404 |
-| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-| `LOG_FORMAT` | `json` | `json` / `text` |
+| `gpt-transcribe` / `whisper-1` / `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` | `mimo-v2.5-asr` | OpenAI 旧名已进入弃用期，本服务不受影响 |
+| `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts`（含快照名） | `mimo-v2.5-tts` | 同上 |
+| `mimo-v2.5-asr` / `mimo-v2.5-tts` / `-voicedesign` / `-voiceclone` | 原样 | 直达 MiMo 语义 |
+| 其它 | 400 `model_not_found` | 不模拟上游没有的能力 |
+
+| 能力 | 支持度 | 说明 |
+| --- | --- | --- |
+| 输入音频 `mp3` / `wav` | ✅ | 按文件魔数嗅探，不看扩展名 |
+| 输入音频 `webm` / `m4a` / `ogg` / `flac` | ❌ 400 | 不内置 ffmpeg，请先自行转码 |
+| 输出音频 `mp3` / `wav` / `pcm` | ✅ | 24 kHz / 16-bit / 单声道（mp3 为 MPEG2 Layer III） |
+| 输出音频 `opus` / `aac` / `flac` | ❌ 400 | 同上 |
+| 转写 `response_format`：`json` / `text` / `verbose_json` | ✅ | `verbose_json` 不含 `segments`，`duration` 为整数秒 |
+| 转写 `response_format`：`srt` / `vtt`、词级时间戳 | ❌ 400 | 上游不给时间戳，不伪造 |
+| 流式转写 `stream=true` | ✅ | SSE：`transcript.text.delta` / `.done`；与 `verbose_json` 互斥 |
+| 流式合成 `stream_format` | ✅ | `audio`（chunked 二进制）或 `sse`（`speech.audio.delta` / `.done`） |
+| 流式 `wav` | ⚠️ 降级 | 上游分片是各自独立的 WAV 文件，只能整段下发；低延迟请用 `mp3` / `pcm` |
+| `instructions`（风格提示） | ✅ | 映射为 MiMo 的 `user` 消息 |
+| `speed` / `prompt` / `temperature` | ⚠️ 忽略 | 上游无对应能力，回 `X-Adapter-Warning` 提示 |
+| 音色别名（`alloy`、`nova` 等） | ✅ | 仅存在性映射，音色语义与 OpenAI 不对齐 |
+| `finish_reason=length` 截断 | ✅ | 一律报错（`upstream_truncated`），不返回半截结果 |
+
+完整的字段映射、错误码与行为差异见 [docs/api-spec.md](docs/api-spec.md)。
+
+<details>
+<summary>接口映射速查</summary>
+
+| 下游（OpenAI） | 上游（MiMo `/chat/completions`） |
+| --- | --- |
+| `file`（multipart） | `messages[0].content[0].input_audio.data` = `data:audio/wav;base64,...` |
+| `language` | `asr_options.language`，仅 `auto` / `zh` / `en` |
+| `input`（speech） | `messages[assistant].content` |
+| `instructions` | `messages[user].content` |
+| `voice` | `audio.voice`（别名解析或克隆样本 DataURL） |
+| `response_format` | `audio.format`，仅 `mp3` / `wav` / `pcm`（pcm → `pcm16`） |
+
+</details>
+
+## 部署与安全
+
+- **鉴权**：`Authorization: Bearer <AUTH_TOKEN>`，恒定时间比较；`/healthz` 免鉴权，`/metrics` 需要 token
+- **无鉴权 = 仅回环**：`AUTH_TOKEN` 留空时强制 `LISTEN_ADDR` 为回环地址（`127.0.0.0/8`、`::1`、`localhost`），否则启动失败——这是相对早期版本的行为变化
+- **并发准入**：`MAX_CONCURRENT_REQUESTS`（默认 4）信号量限流，超出快速 503 `server_busy`，防止大文件并发打爆内存
+- **密钥保护**：`MIMO_API_KEY` 只出现在发往 MiMo 的请求头里，不进日志、错误信息与响应体；`.env` 永不入库
+- **容器加固**：非 root、只读根文件系统、`cap_drop: ALL`、`no-new-privileges`、`tmpfs /tmp`（见 [docker-compose.yml](docker-compose.yml)）
+- **TLS 与对外暴露**：服务端到服务端调用，不实现 CORS；对公网暴露请放在 Caddy / Nginx 反代之后，由反代终结 TLS
+- **隐私**：不落盘、不缓存任何音频字节、转写文本与合成文本
 
 ## 可观测性
 
 结构化日志默认 JSON，固定字段：`request_id`、`route`、`status`、`dur_ms`、`in_bytes`、`out_bytes`、`model_requested`、`model_upstream`、`upstream_status`、`err_code`。不记录音频、转写文本、合成文本与密钥。
 
-`/metrics` 输出 Prometheus 文本格式，与业务端点一样需要 Bearer token：
-
-```bash
-curl -sS localhost:8080/metrics -H "Authorization: Bearer $AUTH_TOKEN" | head -20
-```
+`/metrics` 输出 Prometheus 文本格式（与业务端点一样需要 Bearer token）：
 
 | 指标 | 用途 |
 | --- | --- |
@@ -161,78 +252,50 @@ curl -sS localhost:8080/metrics -H "Authorization: Bearer $AUTH_TOKEN" | head -2
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
-| `401 unauthorized` | 请求没带 `Authorization` 头 | 补 `Bearer <AUTH_TOKEN>` |
-| `401 invalid_token` | 客户端 token 与 `AUTH_TOKEN` 不一致 | 对齐两边，注意复制时的空格与换行 |
+| 启动报 `AUTH_TOKEN is empty but LISTEN_ADDR ...` | 无鉴权 + 非回环监听 | 设 `AUTH_TOKEN`，或 `LISTEN_ADDR=127.0.0.1:8080` |
+| 启动报 `MIMO_BASE_URL must end with the /v1 version segment` | 上游地址缺版本段 | 改成 `https://host/v1` 形式 |
+| `401 unauthorized` / `401 invalid_token` | 请求没带 token / token 不一致 | 补 `Bearer <AUTH_TOKEN>`；注意复制时的空格与换行 |
 | `413 payload_too_large` | 上传超过 `MAX_UPLOAD_BYTES`（默认 25 MiB） | 调大限制或先压缩音频；multipart 边界也计入总量 |
 | `400 unsupported_audio_format` | 传了 webm / m4a / ogg / flac，或扩展名伪装 | 先用 ffmpeg 转 mp3 / wav，本服务不做转码 |
+| `400 invalid_json` | body 不是单个 JSON 对象（含尾随第二个对象） | 检查请求体结尾 |
 | `429 rate_limited` | 上游限流，且没有可用的 `Retry-After` 或等待超过 10s | 降低并发；能重试时响应头会带 `Retry-After` |
+| `503 server_busy` | 并发达到 `MAX_CONCURRENT_REQUESTS`（默认 4） | 稍后重试，或调大该值 / 降低客户端并发 |
 | `502 upstream_auth_error` | `MIMO_API_KEY` 无效或过期 | 换 key；这里故意不用 401，避免客户端误清自己的 token |
+| `502 upstream_truncated` | 上游 `finish_reason=length`，结果被截断 | 拆短输入后重试；流式下对应 `*.error` 事件 |
 | `502 upstream_bad_response` | 上游 200 但没有音频 / choices，或 JSON 不可解析 | 常见于把本项目接到会丢弃 `audio` 字段的中转网关，换成官方端点 |
-| `504 upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 缩短文本或调大超时；流式响应不受写超时限制 |
+| `504 upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 缩短文本或调大超时；长文本合成耗时随字数线性增长 |
 | 容器反复重启 | `/healthz` 不通 | 看启动日志，多为 `MIMO_API_KEY` 缺失或地址格式错误 |
 
 排查顺序：先看日志里的 `request_id` 与 `err_code`，再用同一个 `request_id` 对照上游响应；`/metrics` 的 `upstream_requests_total{kind=...}` 能直接区分本地校验失败与上游失败。
 
-## 接口映射速查
+## 开发
 
-完整规则、错误码与降级行为见 [docs/api-spec.md](docs/api-spec.md)。
+```bash
+go build ./...
+go vet ./...
+go test ./...
+gofmt -l ./cmd ./internal
 
-| 下游（OpenAI） | 上游（MiMo `/chat/completions`） |
-| --- | --- |
-| `file`（multipart） | `messages[0].content[0].input_audio.data` = `data:audio/wav;base64,...` |
-| `language` | `asr_options.language`，仅 `auto` / `zh` / `en` |
-| `input`（speech） | `messages[assistant].content` |
-| `instructions` | `messages[user].content` |
-| `voice` | `audio.voice` |
-| `response_format` | `audio.format`，仅 `mp3` / `wav` / `pcm` |
-| `model` 别名 | `whisper-1` 等 → `mimo-v2.5-asr`；`tts-1` 等 → `mimo-v2.5-tts` |
+MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token LISTEN_ADDR=127.0.0.1:8080 go run ./cmd/mimivoice2api
+```
+
+- 测试全部离线（`httptest` 假上游），不需要真实 API Key；`go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行
+- CI 跑 `gofmt` + `vet` + `test -race` + 双架构 Docker 构建；推送 `v*` tag 触发镜像发布与二进制附件
+- 验收以本地 `go build` 产物 + curl 冒烟为准，冒烟音频在 [testdata/audio/](testdata/audio/)
+- 贡献前请读 [AGENTS.md](AGENTS.md)（硬性约束、分层规则、提交规范）与 [docs/conventions.md](docs/conventions.md)
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | 组件划分、请求流水线、内存模型、超时与部署形态、已知坑位 |
 | [docs/api-spec.md](docs/api-spec.md) | 端点契约、字段映射、错误码、与 OpenAI 的行为差异、上游契约快照 |
+| [docs/architecture.md](docs/architecture.md) | 组件划分、请求流水线、内存模型、超时与部署形态、已知坑位 |
 | [docs/conventions.md](docs/conventions.md) | 目录约定、分层规则、命名、日志字段、测试与 Git 规范 |
 | [docs/roadmap.md](docs/roadmap.md) | M0–M4 里程碑、验收标准、风险与未决问题 |
 | [AGENTS.md](AGENTS.md) | 给 AI 代理与贡献者的硬性约束和操作流程 |
 
-## 开发
-
-本地运行（Docker 之外不会自动读 `.env`，直接给环境变量）：
-
-```bash
-MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token go run ./cmd/mimivoice2api
-
-go vet ./...
-go test ./...
-gofmt -l ./cmd ./internal
-
-curl -sS localhost:8080/metrics -H "Authorization: Bearer dev-token" | head
-```
-
-`go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行。CI 还会检查 `gofmt`、跑 `vet`，并用 buildx 验证 `linux/amd64` + `linux/arm64` 都能构建；推送 `v*` tag 才会真正发镜像。
-
-验收以本地 `go build` 产物 + curl 冒烟为准，不要求 Docker 实装测试。也可以先 `go build -o bin/mimivoice2api ./cmd/mimivoice2api` 再直接运行。
-
-本机没有 `MIMO_API_KEY` 时，测试全程使用 `httptest` 假上游，不访问真实网络。
-
-## 目录（目标态）
-
-```text
-cmd/mimivoice2api/    入口，只做装配
-internal/config/      环境变量 → Config
-internal/httpapi/     路由、中间件、handler、错误 envelope
-internal/adapter/     纯映射函数与别名表，不认识 HTTP
-internal/mimo/        上游客户端、SSE 解析与协议类型
-internal/metrics/     零依赖 Prometheus 文本格式实现
-internal/audio/       魔数嗅探与 MIME 映射
-docs/                 设计与契约
-```
-
-细节见 [docs/conventions.md](docs/conventions.md)。
-
-## 非目标
+<details>
+<summary>非目标</summary>
 
 - 不做音频转码、重采样、格式互转（需要就自行在前置环节用 ffmpeg）
 - 不做通用 LLM 代理，只翻译 audio 两个端点
@@ -241,6 +304,15 @@ docs/                 设计与契约
 - 不持久化任何音频字节或转写文本
 - 不提供 Web UI
 
-## 许可
+</details>
 
-未定。在明确许可证之前，默认保留所有权利。
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源发布。
+
+```text
+SPDX-License-Identifier: MIT
+Copyright (c) 2026 mcxiaochenn
+```
+
+仓库内不含第三方 vendored 代码（`go.mod` 零依赖），测试音频为合成正弦波；使用 MiMo 开放平台服务需自行遵守其服务条款。

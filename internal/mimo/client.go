@@ -177,8 +177,10 @@ func (c *Client) send(ctx context.Context, req ChatRequest, accept string) (*htt
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			// 等待期间调用方取消或超时：返回取消语义的错误，
+			// 而不是把这次放弃误报成上游限流，否则指标与日志会错怪上游。
 			timer.Stop()
-			return nil, upstreamErr
+			return nil, classifyTransportError(ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -243,6 +245,8 @@ func parseRetryAfter(raw string) (time.Duration, bool) {
 }
 
 // post 在 send 基础上解码非流式响应。
+// 用 ReadAll + Unmarshal 而不是流式 Decoder：前者能区分「响应超限」与
+// 「JSON 非法」，并且天然拒绝尾随的第二个对象或垃圾数据。
 func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int, error) {
 	resp, err := c.send(ctx, req, "application/json")
 	if err != nil {
@@ -254,8 +258,24 @@ func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int,
 	}
 	defer resp.Body.Close()
 
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, resp.StatusCode, &Error{
+			Kind:       KindBadResponse,
+			StatusCode: resp.StatusCode,
+			Message:    "failed to read upstream response: " + err.Error(),
+		}
+	}
+	if len(raw) > maxResponseBytes {
+		return nil, resp.StatusCode, &Error{
+			Kind:       KindBadResponse,
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("upstream response exceeds %d bytes", maxResponseBytes),
+		}
+	}
+
 	var out ChatResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, resp.StatusCode, &Error{
 			Kind:       KindBadResponse,
 			StatusCode: resp.StatusCode,
@@ -270,14 +290,20 @@ func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int,
 		}
 	}
 	if out.Choices[0].FinishReason == "length" {
-		return nil, resp.StatusCode, &Error{
-			Kind:       KindTruncated,
-			StatusCode: resp.StatusCode,
-			Message:    "upstream truncated the result (finish_reason=length); shorten the input and retry",
-		}
+		return nil, resp.StatusCode, truncatedError(resp.StatusCode)
 	}
 
 	return &out, resp.StatusCode, nil
+}
+
+// truncatedError 统一 finish_reason=length 的截断错误。
+// 非流式与流式共用同一文案，保证错误码、日志与指标的语义一致。
+func truncatedError(status int) *Error {
+	return &Error{
+		Kind:       KindTruncated,
+		StatusCode: status,
+		Message:    "upstream truncated the result (finish_reason=length); shorten the input and retry",
+	}
 }
 
 // TranscribeStream 调用上游流式识别，逐片回调文本增量。
@@ -326,6 +352,11 @@ func (c *Client) TranscribeStream(ctx context.Context, req ChatRequest, onDelta 
 	})
 	if err != nil {
 		return nil, streamError(ctx, err, resp.StatusCode)
+	}
+	// 与非流式 post() 语义一致：finish_reason=length 表示结果被截断，
+	// 不允许伪装成成功完成，由调用方决定补错误事件还是退回 JSON 错误。
+	if finish == "length" {
+		return nil, truncatedError(resp.StatusCode)
 	}
 
 	seconds := 0
@@ -389,6 +420,11 @@ func (c *Client) SynthesizeStream(ctx context.Context, req ChatRequest, onAudio 
 	})
 	if err != nil {
 		return nil, streamError(ctx, err, resp.StatusCode)
+	}
+	// 截断判定在「无音频」之前：零分片 + finish_reason=length 是首片前就截断，
+	// 应报 truncated 而不是 bad_response，两者客户端应对方式不同。
+	if finish == "length" {
+		return nil, truncatedError(resp.StatusCode)
 	}
 	if chunks == 0 {
 		return nil, &Error{

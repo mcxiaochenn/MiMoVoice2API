@@ -109,6 +109,7 @@ func TestResolveASRModel(t *testing.T) {
 		{name: "whisper alias", requested: "whisper-1", wantModel: ASRModel},
 		{name: "gpt-4o alias", requested: "gpt-4o-transcribe", wantModel: ASRModel},
 		{name: "mini alias", requested: "gpt-4o-mini-transcribe", wantModel: ASRModel},
+		{name: "gpt-transcribe alias", requested: "gpt-transcribe", wantModel: ASRModel},
 		{name: "unknown", requested: "whisper-large", wantCode: "model_not_found"},
 	}
 

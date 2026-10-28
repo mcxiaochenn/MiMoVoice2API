@@ -5,6 +5,8 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -20,22 +22,28 @@ const (
 	defaultMaxUploadBytes  = int64(25 << 20) // 25 MiB
 	defaultMaxTTSChars     = 1000
 	defaultUpstreamTimeout = 180 * time.Second
+	// defaultMaxConcurrentRequests 是并发处理上限的默认值。
+	// ASR 上传走全量缓冲，单请求峰值内存约为上传上限的 4~5 倍
+	// （multipart 缓冲 + 原始字节 + base64 + JSON），4 × 25 MiB × 4 ≈ 400 MiB
+	// 封顶，适配 1 GiB 级自托管主机；内存充裕或上传很小时可调高。
+	defaultMaxConcurrentRequests = 4
 )
 
 // Config 是服务的完整运行配置。
 type Config struct {
-	MIMOAPIKey      string
-	MIMOBaseURL     string
-	MIMOASRModel    string
-	MIMOTTSModel    string
-	ListenAddr      string
-	AuthToken       string
-	MaxUploadBytes  int64
-	MaxTTSChars     int
-	UpstreamTimeout time.Duration
-	LogLevel        slog.Level
-	LogFormat       string
-	MetricsEnabled  bool
+	MIMOAPIKey            string
+	MIMOBaseURL           string
+	MIMOASRModel          string
+	MIMOTTSModel          string
+	ListenAddr            string
+	AuthToken             string
+	MaxUploadBytes        int64
+	MaxTTSChars           int
+	MaxConcurrentRequests int
+	UpstreamTimeout       time.Duration
+	LogLevel              slog.Level
+	LogFormat             string
+	MetricsEnabled        bool
 }
 
 // Load 读取进程环境变量。
@@ -46,17 +54,18 @@ func Load() (Config, error) {
 // load 允许测试注入环境变量读取函数。
 func load(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		MIMOAPIKey:      strings.TrimSpace(getenv("MIMO_API_KEY")),
-		MIMOBaseURL:     strings.TrimRight(stringOrDefault(getenv("MIMO_BASE_URL"), defaultBaseURL), "/"),
-		MIMOASRModel:    stringOrDefault(getenv("MIMO_ASR_MODEL"), defaultASRModel),
-		MIMOTTSModel:    stringOrDefault(getenv("MIMO_TTS_MODEL"), defaultTTSModel),
-		ListenAddr:      stringOrDefault(getenv("LISTEN_ADDR"), defaultListenAddr),
-		AuthToken:       strings.TrimSpace(getenv("AUTH_TOKEN")),
-		MaxUploadBytes:  defaultMaxUploadBytes,
-		MaxTTSChars:     defaultMaxTTSChars,
-		UpstreamTimeout: defaultUpstreamTimeout,
-		LogFormat:       strings.ToLower(stringOrDefault(getenv("LOG_FORMAT"), "json")),
-		MetricsEnabled:  true,
+		MIMOAPIKey:            strings.TrimSpace(getenv("MIMO_API_KEY")),
+		MIMOBaseURL:           strings.TrimRight(stringOrDefault(getenv("MIMO_BASE_URL"), defaultBaseURL), "/"),
+		MIMOASRModel:          stringOrDefault(getenv("MIMO_ASR_MODEL"), defaultASRModel),
+		MIMOTTSModel:          stringOrDefault(getenv("MIMO_TTS_MODEL"), defaultTTSModel),
+		ListenAddr:            stringOrDefault(getenv("LISTEN_ADDR"), defaultListenAddr),
+		AuthToken:             strings.TrimSpace(getenv("AUTH_TOKEN")),
+		MaxUploadBytes:        defaultMaxUploadBytes,
+		MaxTTSChars:           defaultMaxTTSChars,
+		MaxConcurrentRequests: defaultMaxConcurrentRequests,
+		UpstreamTimeout:       defaultUpstreamTimeout,
+		LogFormat:             strings.ToLower(stringOrDefault(getenv("LOG_FORMAT"), "json")),
+		MetricsEnabled:        true,
 	}
 
 	if cfg.MIMOAPIKey == "" {
@@ -81,6 +90,14 @@ func load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("MAX_TTS_CHARS must be a positive integer, got %q", raw)
 		}
 		cfg.MaxTTSChars = v
+	}
+
+	if raw := strings.TrimSpace(getenv("MAX_CONCURRENT_REQUESTS")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return Config{}, fmt.Errorf("MAX_CONCURRENT_REQUESTS must be a positive integer, got %q", raw)
+		}
+		cfg.MaxConcurrentRequests = v
 	}
 
 	if raw := strings.TrimSpace(getenv("METRICS_ENABLED")); raw != "" {
@@ -123,7 +140,42 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("LISTEN_ADDR must not be empty")
 	}
 
+	// 无鉴权时只允许回环监听：默认配置（:8080 绑定所有接口）会把未鉴权服务
+	// 直接暴露到网络里，必须在启动阶段就拒绝，而不是只打一行警告。
+	if cfg.AuthToken == "" {
+		if err := validateLoopbackListen(cfg.ListenAddr); err != nil {
+			return Config{}, err
+		}
+	}
+
 	return cfg, nil
+}
+
+// validateLoopbackListen 校验 LISTEN_ADDR 绑定的是回环地址。
+func validateLoopbackListen(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("LISTEN_ADDR %q must be in host:port form", addr)
+	}
+	if hostIsLoopback(host) {
+		return nil
+	}
+	return fmt.Errorf(
+		"AUTH_TOKEN is empty but LISTEN_ADDR %q is not a loopback address; set AUTH_TOKEN or listen on a loopback address such as 127.0.0.1:8080",
+		addr,
+	)
+}
+
+// hostIsLoopback 判断监听主机是否为回环。
+// 空主机（":8080"）与 0.0.0.0 / :: 一样表示绑定所有接口，不算回环；
+// 用 netip 解析而不是字符串前缀，IPv4、IPv6（含 zone）与 localhost 都覆盖。
+func hostIsLoopback(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 func stringOrDefault(raw, fallback string) string {
@@ -136,13 +188,29 @@ func stringOrDefault(raw, fallback string) string {
 func validateBaseURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("MIMO_BASE_URL is not a valid URL: %w", err)
+		return fmt.Errorf("MIMO_BASE_URL is not a valid URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("MIMO_BASE_URL must use http or https, got %q", raw)
+		return fmt.Errorf("MIMO_BASE_URL must use http or https")
 	}
 	if u.Host == "" {
-		return fmt.Errorf("MIMO_BASE_URL must include a host, got %q", raw)
+		return fmt.Errorf("MIMO_BASE_URL must include a host")
+	}
+	// 代理地址也不该把凭据写进 URL：它们会出现在错误日志与请求行里。
+	if u.User != nil {
+		return fmt.Errorf("MIMO_BASE_URL must not contain userinfo (user:password@)")
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("MIMO_BASE_URL must not contain a query string")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("MIMO_BASE_URL must not contain a fragment")
+	}
+	// 客户端在基址后追加 /chat/completions，所以路径必须以 /v1 版本段收尾；
+	// 允许自定义前缀（如 https://proxy.example.com/mimo/v1），尾部斜杠忽略。
+	path := strings.TrimRight(u.Path, "/")
+	if !strings.HasSuffix(path, "/v1") {
+		return fmt.Errorf("MIMO_BASE_URL must end with the /v1 version segment (for example https://api.xiaomimimo.com/v1)")
 	}
 	return nil
 }

@@ -24,11 +24,18 @@ type server struct {
 	mimo    *mimo.Client
 	build   BuildInfo
 	metrics *metrics.Registry
+	limiter *limiter
 }
 
 // New 组装路由与中间件，返回可直接交给 http.Server 的 Handler。
 func New(cfg config.Config, log *slog.Logger, client *mimo.Client, build BuildInfo) http.Handler {
-	s := &server{cfg: cfg, log: log, mimo: client, build: build}
+	s := &server{
+		cfg:     cfg,
+		log:     log,
+		mimo:    client,
+		build:   build,
+		limiter: newLimiter(cfg.MaxConcurrentRequests),
+	}
 
 	if cfg.MetricsEnabled {
 		s.metrics = metrics.New()
@@ -53,9 +60,10 @@ func New(cfg config.Config, log *slog.Logger, client *mimo.Client, build BuildIn
 	}
 	mux.HandleFunc("/", s.handleNotFound)
 
-	// 顺序：request id → 访问日志 → panic 恢复 → 鉴权 → 路由。
+	// 顺序：request id → 访问日志 → panic 恢复 → 鉴权 → 并发准入 → 路由。
 	// recover 必须在访问日志内层，否则 panic 展开时日志拿不到最终状态码。
-	return s.withRequestID(s.withAccessLog(s.withRecover(s.withAuth(mux))))
+	// 并发准入在鉴权之后，未通过鉴权的请求不占额度，也在读取大请求体之前。
+	return s.withRequestID(s.withAccessLog(s.withRecover(s.withAuth(s.withConcurrencyLimit(mux)))))
 }
 
 func (s *server) method(method string, next http.HandlerFunc) http.HandlerFunc {

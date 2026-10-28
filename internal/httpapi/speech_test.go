@@ -290,6 +290,8 @@ func TestSpeechLocalErrors(t *testing.T) {
 		{name: "voicedesign without instructions", body: `{"model":"mimo-v2.5-tts-voicedesign","input":"x"}`, maxChars: 1000, withAuth: true, wantCode: "missing_instructions", wantParam: "instructions"},
 		{name: "voiceclone without voice", body: `{"model":"mimo-v2.5-tts-voiceclone","input":"x"}`, maxChars: 1000, withAuth: true, wantCode: "missing_voice", wantParam: "voice"},
 		{name: "invalid json", body: `{`, maxChars: 1000, withAuth: true, wantCode: "invalid_json"},
+		{name: "尾随第二个 JSON 对象", body: `{"input":"x"}{"input":"y"}`, maxChars: 1000, withAuth: true, wantCode: "invalid_json"},
+		{name: "尾随垃圾数据", body: `{"input":"x"} trailing`, maxChars: 1000, withAuth: true, wantCode: "invalid_json"},
 		{name: "missing token", body: `{"input":"x"}`, maxChars: 1000, withAuth: false, wantCode: "unauthorized"},
 	}
 
@@ -329,6 +331,21 @@ func TestSpeechLocalErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// JSON 对象后的空白字符不属于尾随数据，正常请求不受收紧影响。
+func TestSpeechAcceptsTrailingWhitespace(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		audioResponse(t, w, []byte("abc"), "mimo-v2.5-tts", false)
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	// wav 走上游非流式，audioResponse 的非流式分支与之匹配。
+	rec := doSpeech(t, handler, "{\"input\":\"x\",\"response_format\":\"wav\"}\n  ", true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 

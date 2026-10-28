@@ -8,7 +8,7 @@
 ### 1.1 基址与鉴权
 
 - 基址：`http://<host>:8080/v1`，与 OpenAI SDK 的 `base_url` 对齐
-- 鉴权：`Authorization: Bearer <AUTH_TOKEN>`；`AUTH_TOKEN` 为空时不校验（仅限本机调试）
+- 鉴权：`Authorization: Bearer <AUTH_TOKEN>`；`AUTH_TOKEN` 为空时不校验，且启动时强制 `LISTEN_ADDR` 为回环地址（`127.0.0.0/8`、`::1`、`localhost`），配置了非回环监听会拒绝启动——仅限本机调试
 - 免鉴权路径：仅 `GET /healthz`。`GET /metrics` 与业务端点一样需要 token
 - 上游鉴权：服务端使用 `Authorization: Bearer <MIMO_API_KEY>`，密钥不出服务端
 
@@ -64,6 +64,12 @@
 | `instructions-ignored` | 音色克隆模型下传了 `instructions` |
 | `prompt-ignored` | 转写请求带 `prompt` |
 | `temperature-ignored` | 转写请求带 `temperature` |
+
+### 1.6 并发准入
+
+- 同时处理的请求数受 `MAX_CONCURRENT_REQUESTS`（默认 4）限制，超出立即返回 503 `server_busy`，不排队
+- 许可在鉴权通过后、读取请求体之前获取；请求结束（含错误、客户端取消、panic、流式中止）即释放
+- `GET /healthz` 不占额度，保证健康检查在高负载下仍可用；`/metrics` 与业务端点一样计入额度
 
 ## 2. 语音转写 `POST /v1/audio/transcriptions`
 
@@ -127,9 +133,14 @@ OpenAI 在纯文本响应末尾不加换行，本服务保持一致。
 | 下游 `model` | 上游 `model` |
 | --- | --- |
 | 空 | `MIMO_ASR_MODEL`（默认 `mimo-v2.5-asr`） |
-| `whisper-1` / `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` | `mimo-v2.5-asr` |
+| `gpt-transcribe` / `whisper-1` / `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` | `mimo-v2.5-asr` |
 | `mimo-v2.5-asr` | 原样 |
 | 其它 | 400 `model_not_found` |
+
+别名只是**存在性兼容**：模型名相同不代表识别能力、时间戳、语种覆盖与 OpenAI 一致，结果一律来自 MiMo 上游。
+OpenAI 侧的弃用时间表（`whisper-1` 等 2027-02-26 下线、`gpt-transcribe` 为 2026-07 起的推荐模型）不影响本表：
+客户端发任何别名都会映射到 `mimo-v2.5-asr`。`gpt-live-transcribe`（Realtime 专用）与
+`gpt-4o-transcribe-diarize`（说话人分离）**不接受**：它们的语义本适配层无法兑现。
 
 ### 2.5 上行映射
 
@@ -180,9 +191,10 @@ data: {"type":"transcript.text.done","text":"你好，世界。","usage":{"type"
 
 - 上游 `delta.content` 逐片转成 `transcript.text.delta`，**不缓冲、不合并**，来一片发一片
 - 收尾固定发 `transcript.text.done`，`text` 是拼接后的完整结果，`usage` 来自上游用量帧
+- **`finish_reason=length` 一律视为截断，不发 `done`**：已发过 delta 则补 `transcript.text.error`（`error.code=upstream_truncated`）；一片都没发则退回 502 JSON `upstream_truncated`。与非流式语义一致
 - `response_format=verbose_json` 与 `stream=true` 互斥，返回 400 `unsupported_parameter`：流式没有承载时长/语言的字段
 - 上游若在流中途失败（HTTP 已 200），补发 `transcript.text.error`，事件内带 `error.code`，与 `speech.audio.error` 同构
-- 上游未发 `[DONE]` 就断开视为截断，同样走 error 事件，不会伪装成正常结束
+- 上游未发 `[DONE]` 就断开视为流中断（`upstream_bad_response`），同样走 error 事件，不会伪装成正常结束
 - 上游在响应头之前就返回 4xx/5xx 时，仍然回标准 JSON 错误（此时 SSE 尚未开始）
 
 ## 3. 语音合成 `POST /v1/audio/speech`
@@ -203,6 +215,7 @@ data: {"type":"transcript.text.done","text":"你好，世界。","usage":{"type"
 | 其它 | — | 否 | 忽略 | |
 
 JSON 请求体上限同样使用 `MAX_UPLOAD_BYTES`（25 MiB），主要留给音色克隆样本。
+请求体必须是**单个** JSON 对象：尾随第二个对象或垃圾数据都会返回 400 `invalid_json`（对象后的空白字符除外）。
 
 缺 `voice` 时的行为按模型区分：普通合成回落 `mimo_default` 并回 `voice-defaulted`；音色设计不传该字段；音色克隆必须提供，否则 400 `missing_voice`。
 
@@ -247,11 +260,14 @@ Transfer-Encoding: chunked
 
 | 下游 `model` | 上游 `model` | 用途 |
 | --- | --- | --- |
-| 空 / `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` | `mimo-v2.5-tts` | 内置音色合成 |
+| 空 / `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` / `gpt-4o-mini-tts-2025-12-15` | `mimo-v2.5-tts` | 内置音色合成 |
 | `mimo-v2.5-tts` | 原样 | 同上 |
 | `mimo-v2.5-tts-voicedesign` | 原样 | 用 `instructions` 描述音色 |
 | `mimo-v2.5-tts-voiceclone` | 原样 | 用 `voice` 传样本 |
 | 其它 | — | 400 `model_not_found` |
+
+`tts-1` 系列在 OpenAI 已进入弃用期（2027-01-06 下线，且其指定替代品是 Realtime 模型、不能服务
+`/v1/audio/speech`）；本适配层的别名不受该时间表影响，仍映射到 `mimo-v2.5-tts`。
 
 内置音色别名（仅做存在性兼容，音色语义**不与** OpenAI 对齐）：
 
@@ -381,6 +397,7 @@ data: {"type":"speech.audio.error","error":{"message":"...","type":"api_error","
 
 - 分片可独立 base64 解码（实测 14/14 全部成功），因此不做跨片解码缓冲
 - `voicedesign` / `voiceclone` 的流式是单片的降级模式，适配层照样只发一个 delta
+- **`finish_reason=length` 视为截断，不发 `speech.audio.done`**：SSE 模式已发过 delta 则补 `speech.audio.error`（`error.code=upstream_truncated`）；二进制模式已写出字节则中止连接；都没开始则退回 502 JSON `upstream_truncated`
 - 二进制模式不设置 `Content-Length`，走 chunked
 - 二进制模式一旦写出音频，再遇到上游中断就只能断开连接（不追加 JSON），客户端应把不完整下载判为失败；SSE 模式此时会补一个 `speech.audio.error` 事件
 - 客户端断开立即取消上游请求，日志记 `client_canceled`，不算上游故障
@@ -477,7 +494,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 
 | HTTP | `type` | `code` | 触发条件 | 客户端应对 |
 | --- | --- | --- | --- | --- |
-| 400 | `invalid_request_error` | `invalid_json` | body 不是合法 JSON | 修请求 |
+| 400 | `invalid_request_error` | `invalid_json` | body 不是合法 JSON，或尾随第二个对象 / 垃圾数据 | 修请求 |
 | 400 | `invalid_request_error` | `invalid_multipart` | multipart 解析失败 | 修请求 |
 | 400 | `invalid_request_error` | `missing_file` | 没有 `file` 字段 | 补字段 |
 | 400 | `invalid_request_error` | `empty_file` | 音频为 0 字节 | 修请求 |
@@ -496,12 +513,13 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 | 405 | `invalid_request_error` | `method_not_allowed` | 方法不对 | 换方法 |
 | 413 | `invalid_request_error` | `payload_too_large` | 超过 `MAX_UPLOAD_BYTES` | 压缩或分段 |
 | 429 | `rate_limit_error` | `rate_limited` | 上游 429 | 按 `Retry-After` 退避 |
+| 503 | `api_error` | `server_busy` | 并发请求数达到 `MAX_CONCURRENT_REQUESTS` | 稍后重试或降低并发 |
 | 500 | `api_error` | `internal_error` | 未捕获异常 | 反馈并附 `X-Request-ID` |
 | 502 | `api_error` | `upstream_invalid_request` | 上游 400/422 | 反馈，属于映射缺陷 |
 | 502 | `api_error` | `upstream_auth_error` | 上游 401/403 | 运维检查 `MIMO_API_KEY` |
 | 502 | `api_error` | `upstream_unreachable` | 连接失败 / DNS 失败 | 稍后重试 |
 | 502 | `api_error` | `upstream_bad_response` | 上游 200 但结构不可解析，或上游 404（`MIMO_BASE_URL` 配错） | 反馈；404 时检查上游地址 |
-| 502 | `api_error` | `upstream_truncated` | `finish_reason=length` | 拆分输入后重试 |
+| 502 | `api_error` | `upstream_truncated` | `finish_reason=length`（流式已输出时改为 `*.error` 事件 / 中止连接） | 拆分输入后重试 |
 | 504 | `api_error` | `upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 稍后重试或缩短输入 |
 | 499 | `api_error` | `client_closed_request` | 客户端在流完成前断开 | 通常写不出去，仅用于日志与指标 |
 
@@ -516,8 +534,12 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 
 ## 6. 与 OpenAI 的行为差异
 
+> OpenAI 兼容面（模型名、参数、事件）核对日期：2026-10-28，
+> 来源 `developers.openai.com` 的 Transcription / Speech 指南与 Deprecations 页面。
+
 | 差异 | 影响 | 处理 |
 | --- | --- | --- |
+| 模型名兼容 ≠ 语义一致 | `gpt-transcribe` 等别名可用，但识别质量、语种、速度是 MiMo 的 | 别名仅做存在性映射；要对齐效果请直接用 `mimo-v2.5-*` |
 | 无时间戳 | `srt` / `vtt` 不可用，`verbose_json` 无 `segments` | 明确 400，不伪造时间轴 |
 | 无词级时间戳 | `timestamp_granularities[]=word` 不可用 | 400 |
 | `language` 仅 `auto` / `zh` / `en` | 请求其它语言会被降级 | 回落 `auto` + `language-fallback-auto` |
@@ -525,6 +547,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 | `temperature` 不生效 | 无法调随机性 | 接受但忽略并警告 |
 | `speed` 不生效 | 语速不可控 | 忽略并警告；需要变速请自行后处理 |
 | 音色语义不对齐 | `nova` 不等于 OpenAI 的 nova | 别名仅保证「存在且可用」 |
+| OpenAI 新增音色未全部映射 | `marin` / `cedar` 等新音色传入会 400 `voice_not_found` | 需要时再加别名映射；MiMo 侧无对应音色语义 |
 | 不支持输入 `webm` / `m4a` / `ogg` / `flac` | 浏览器直录的 `webm` 需先转码 | 400 + 明确提示 |
 | 不支持输出 `opus` / `aac` / `flac` | 部分客户端默认要 opus | 400 + 明确提示 |
 | 错误文案可能为中文 | 客户端日志可读性 | `code` 已归一化，按 `code` 判断 |

@@ -129,7 +129,7 @@ sequenceDiagram
 - base64 膨胀系数 4/3：25 MiB 音频 → 约 33.4 MiB 的 `input_audio.data` 字符串。
 - M1 采用**全量 buffer**：峰值内存 ≈ 原始音频 + base64 字符串 + JSON body ≈ 3 倍上传大小，单请求百 MiB 量级。
   - 理由：25 MiB 上限下可接受，代码简单，`Content-Length` 明确、便于上游错误分类。
-  - 代价：并发大文件时 RSS 上升。缓解手段是把 `MAX_UPLOAD_BYTES` 调小，而不是提前上流式。
+  - 代价：并发大文件时 RSS 上升。缓解手段是把 `MAX_UPLOAD_BYTES` 调小或调低 `MAX_CONCURRENT_REQUESTS`（并发准入上限），而不是提前上流式。
 - 若 M3 后确需 >25 MiB，再改 `io.Pipe` + `base64.NewEncoder` 流式上送；代价是失去 `Content-Length`、上游可能改用 chunked、失败无法重放。
 
 ### 7.2 响应体积
@@ -150,7 +150,7 @@ sequenceDiagram
 | 优雅退出 | 10s | `SIGINT` / `SIGTERM` 后停止收新请求并等待在途请求 |
 
 - `context` 从 handler 一路传到 `mimo.Client`；客户端断开即取消上游请求，避免继续计费。
-- 不做服务端排队与并发上限：并发由 `net/http` 自然承接，上游 429 原样映射为 429 并透传 `Retry-After`。
+- 并发上限由信号量实现（`MAX_CONCURRENT_REQUESTS`，默认 4）：鉴权后取许可、请求结束释放（defer 覆盖错误、取消、panic 与流式中止），超限快速 503 `server_busy`，不排队、不做分布式限流；`/healthz` 不占额度。
 - 只对 429 重试一次，且必须带可接受的 `Retry-After`（≤ 10 s，支持秒数与 HTTP-date）。其它错误一律不重试：生成类请求重试会重复计费，TTS 结果也不确定。
 
 ## 9. 错误传播
@@ -171,7 +171,7 @@ httpapi 输出 {"error": {...}}，并写 X-Request-ID
 | 429 | 429 `rate_limited` + `Retry-After` | 背压交给客户端 |
 | 5xx | 502 `upstream_error` | 网关语义 |
 | 超时 / 连接失败 | 504 `upstream_timeout` / 502 `upstream_unreachable` | 区分可重试与不可达 |
-| `finish_reason=length` | 502 `upstream_truncated` | 结果不完整，静默返回截断文本更糟 |
+| `finish_reason=length` | 502 `upstream_truncated` | 结果不完整，静默返回截断文本更糟；流式下同样按失败收尾（error 事件或中止），不发 `*.done` |
 
 约束：
 
@@ -298,7 +298,7 @@ services:
 | T7 | `mimo-v2.5-tts-voicedesign` 必带 `user` 消息且不接受 `voice` | 传 `voice` 直接 400，避免用户以为生效 |
 | T8 | ASR 只支持单段音频 | 多文件或多段直接 400 |
 | T9 | `optimize_text_preview` 仅 voicedesign 生效，且可省略 assistant 消息 | 本适配层不暴露该参数，避免语义分叉 |
-| T10 | 上游可能因长度限制返回 `finish_reason=length` | 502 `upstream_truncated`，提示拆分输入，不返回半截结果 |
+| T10 | 上游可能因长度限制返回 `finish_reason=length` | 非流式 502 `upstream_truncated`；流式同样按截断失败处理（已输出则 error 事件 / 中止连接，未输出则 502），绝不发 `*.done` |
 
 ## 13. 演进方向
 

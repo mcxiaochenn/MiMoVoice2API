@@ -8,6 +8,7 @@
 MiMoVoice2API/
 ├── AGENTS.md                     M0   AI 代理与贡献者约束
 ├── README.md                     M0   项目说明与使用入口
+├── LICENSE                       —    MIT 许可证（SPDX: MIT）
 ├── .env.example                  M0   配置样例（只有占位值）
 ├── .gitignore                    M0
 ├── .gitattributes                M1   统一 LF，标记二进制样例

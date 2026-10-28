@@ -157,6 +157,50 @@ func (s *server) withAuth(next http.Handler) http.Handler {
 	})
 }
 
+// limiter 用带缓冲 channel 做并发准入控制，语义是信号量：
+// 满了就立刻拒绝，不排队，避免请求堆积放大内存占用。
+type limiter struct {
+	slots chan struct{}
+}
+
+func newLimiter(n int) *limiter {
+	return &limiter{slots: make(chan struct{}, n)}
+}
+
+func (l *limiter) acquire() bool {
+	select {
+	case l.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *limiter) release() {
+	<-l.slots
+}
+
+// withConcurrencyLimit 在鉴权之后、读取请求体之前限流，保护全量缓冲的上传路径。
+// /healthz 不占额度，保证健康检查不被业务请求挤掉。
+// 释放放在 defer：正常返回、客户端取消、panic 展开与流式中止都会经过它。
+func (s *server) withConcurrencyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.limiter.acquire() {
+			s.writeAPIError(w, r, newAPIError(
+				"server_busy", "",
+				"server is at capacity; retry later or lower request concurrency",
+			))
+			return
+		}
+		defer s.limiter.release()
+		next.ServeHTTP(w, r)
+	})
+}
+
 // responseRecorder 记录状态码与写出字节数，并把 Flush 透传给底层 Writer。
 type responseRecorder struct {
 	http.ResponseWriter
