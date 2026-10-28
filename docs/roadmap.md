@@ -71,9 +71,11 @@ curl -sS localhost:8080/v1/audio/transcriptions \
 
 **风险**：上游 `input_audio` 对 data URL 的格式要求可能与文档有偏差 → 首个联调用例先打通最小请求，再补参数。
 
-## M2 — 合成（复杂度 M）
+## M2 — 合成（已实现，本地可执行文件验收）
 
 **目标**：`/v1/audio/speech` 非流式可用，覆盖普通合成、音色设计、音色克隆。
+
+**状态**：代码与测试完成；本地可执行文件 + 假上游已跑通三种模型、三种输出格式与错误映射。真实上游的音频可播放性与克隆样本格式（Q1）仍需可选联调，不作为门槛。
 
 范围：
 
@@ -87,22 +89,25 @@ curl -sS localhost:8080/v1/audio/transcriptions \
 **验收**
 
 ```bash
+# 可选：真实上游联调，不作为验收门槛
 curl -sS localhost:8080/v1/audio/speech \
   -H "Authorization: Bearer $AUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"model":"tts-1","voice":"nova","input":"测试一句话。","response_format":"mp3"}' \
   --output out.mp3
 ```
 
-- [ ] `out.mp3` 能被 `ffprobe` 识别，时长与文本量级匹配
-- [ ] `wav` / `pcm` 输出头与 `Content-Type` 一致
-- [ ] `voice=冰糖` 与 `voice=nova` 都能出声
-- [ ] `voicedesign` 缺 `instructions` 返回 400 `missing_instructions`
-- [ ] `voicedesign` 传 `voice` 返回 400 `unsupported_parameter`
-- [ ] `speed=1.5` 返回音频且带 `X-Adapter-Warning: speed-ignored`
-- [ ] `response_format=opus` 返回 400
-- [ ] 回填 api-spec 第 8 节的 Q1（克隆样本格式）
+- [x] 本地可执行文件 + 假上游返回音频，字节与上游 base64 解码结果一致
+- [x] `wav` / `pcm` 输出头与 `Content-Type` 一致（`audio/wav`、`audio/pcm`）
+- [x] `voice=冰糖` 与 `voice=nova` 均映射到合法上游音色（请求体断言）
+- [x] `voicedesign` 缺 `instructions` 返回 400 `missing_instructions`
+- [x] `voicedesign` 传 `voice` 返回 400 `unsupported_parameter`
+- [x] `speed=1.5` 返回音频且带 `X-Adapter-Warning: speed-ignored`
+- [x] `response_format=opus` 返回 400
+- [x] 克隆样本的 `data:` 前缀被剥离，以纯 base64 下发（请求体断言）
+- [ ] 真实上游音频可播放、`ffprobe` 识别正常（可选）
+- [ ] 回填 api-spec 第 8 节的 Q1（真实上游实测，可选）
 
-**风险**：克隆样本的传参形式未实测；先做普通合成，克隆放最后。
+**风险**：克隆样本的传参形式未在真实上游验证；已按文档统一为纯 base64，Q1 结论不阻塞 M3。
 
 ## M3 — 流式（复杂度 L）
 

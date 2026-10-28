@@ -185,6 +185,8 @@ func routeName(path string) string {
 	switch path {
 	case "/v1/audio/transcriptions":
 		return "transcriptions"
+	case "/v1/audio/speech":
+		return "speech"
 	case "/v1/models":
 		return "models"
 	case "/healthz":

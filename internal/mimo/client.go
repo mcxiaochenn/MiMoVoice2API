@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	maxResponseBytes = 4 << 20  // 上游正常响应上限
+	maxResponseBytes = 32 << 20 // 上游正常响应上限，需容纳 base64 音频
 	maxErrorBytes    = 64 << 10 // 上游错误体读取上限
 	maxMessageRunes  = 512      // 回传给客户端的上游消息截断长度
 	userAgent        = "MiMoVoice2API"
@@ -58,6 +58,13 @@ type Transcription struct {
 	UpstreamStatus int
 }
 
+// Speech 是合成结果，音频保持上游的 base64 形式，由 handler 流式解码。
+type Speech struct {
+	AudioBase64    string
+	Model          string
+	UpstreamStatus int
+}
+
 // Client 是 MiMo /chat/completions 的最小客户端。
 type Client struct {
 	baseURL string
@@ -76,14 +83,58 @@ func New(baseURL, apiKey string, timeout time.Duration) *Client {
 
 // Transcribe 调用上游完成一次语音识别。
 func (c *Client) Transcribe(ctx context.Context, req ChatRequest) (*Transcription, error) {
+	out, status, err := c.post(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	seconds := 0
+	if out.Usage != nil {
+		seconds = out.Usage.Seconds
+	}
+
+	return &Transcription{
+		Text:           out.Choices[0].Message.Content,
+		Seconds:        seconds,
+		Model:          out.Model,
+		FinishReason:   out.Choices[0].FinishReason,
+		UpstreamStatus: status,
+	}, nil
+}
+
+// Synthesize 调用上游完成一次语音合成。
+func (c *Client) Synthesize(ctx context.Context, req ChatRequest) (*Speech, error) {
+	out, status, err := c.post(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	audio := out.Choices[0].Message.Audio
+	if audio == nil || audio.Data == "" {
+		return nil, &Error{
+			Kind:       KindBadResponse,
+			StatusCode: status,
+			Message:    "upstream response contains no audio",
+		}
+	}
+
+	return &Speech{
+		AudioBase64:    audio.Data,
+		Model:          out.Model,
+		UpstreamStatus: status,
+	}, nil
+}
+
+// post 统一处理编码、发送、状态码分类与响应解码。
+func (c *Client) post(ctx context.Context, req ChatRequest) (*ChatResponse, int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, &Error{Kind: KindBadResponse, Message: "failed to encode upstream request: " + err.Error()}
+		return nil, 0, &Error{Kind: KindBadResponse, Message: "failed to encode upstream request: " + err.Error()}
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(), bytes.NewReader(body))
 	if err != nil {
-		return nil, &Error{Kind: KindUnreachable, Message: err.Error()}
+		return nil, 0, &Error{Kind: KindUnreachable, Message: err.Error()}
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -92,13 +143,13 @@ func (c *Client) Transcribe(ctx context.Context, req ChatRequest) (*Transcriptio
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, classifyTransportError(err)
+		return nil, 0, classifyTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBytes))
-		return nil, &Error{
+		return nil, resp.StatusCode, &Error{
 			Kind:       classifyStatus(resp.StatusCode),
 			StatusCode: resp.StatusCode,
 			Message:    upstreamMessage(raw, resp.StatusCode),
@@ -108,41 +159,28 @@ func (c *Client) Transcribe(ctx context.Context, req ChatRequest) (*Transcriptio
 
 	var out ChatResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
-		return nil, &Error{
+		return nil, resp.StatusCode, &Error{
 			Kind:       KindBadResponse,
 			StatusCode: resp.StatusCode,
 			Message:    "invalid JSON from upstream: " + err.Error(),
 		}
 	}
 	if len(out.Choices) == 0 {
-		return nil, &Error{
+		return nil, resp.StatusCode, &Error{
 			Kind:       KindBadResponse,
 			StatusCode: resp.StatusCode,
 			Message:    "upstream response contains no choices",
 		}
 	}
-
-	choice := out.Choices[0]
-	if choice.FinishReason == "length" {
-		return nil, &Error{
+	if out.Choices[0].FinishReason == "length" {
+		return nil, resp.StatusCode, &Error{
 			Kind:       KindTruncated,
 			StatusCode: resp.StatusCode,
-			Message:    "upstream truncated the result (finish_reason=length); split the input and retry",
+			Message:    "upstream truncated the result (finish_reason=length); shorten the input and retry",
 		}
 	}
 
-	seconds := 0
-	if out.Usage != nil {
-		seconds = out.Usage.Seconds
-	}
-
-	return &Transcription{
-		Text:           choice.Message.Content,
-		Seconds:        seconds,
-		Model:          out.Model,
-		FinishReason:   choice.FinishReason,
-		UpstreamStatus: resp.StatusCode,
-	}, nil
+	return &out, resp.StatusCode, nil
 }
 
 func (c *Client) endpoint() string {

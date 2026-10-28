@@ -170,14 +170,16 @@ OpenAI 在纯文本响应末尾不加换行，本服务保持一致。
 | --- | --- | --- | --- | --- |
 | `model` | string | 否 | 支持 | 别名与三个原生模型见 3.4；空则用默认值 |
 | `input` | string | 是 | 支持 | 1 ~ `MAX_TTS_CHARS`（默认 1000）字符，超限 400 |
-| `voice` | string | 否 | 部分 | 别名、原生音色 ID，或克隆样本（仅克隆模型） |
-| `instructions` | string | 否 | 部分 | 映射为 `user` 消息；克隆模型下忽略并警告 |
+| `voice` | string | 否（克隆模型必填） | 部分 | 别名、原生音色 ID，或克隆样本（仅克隆模型） |
+| `instructions` | string | 否（音色设计必填） | 部分 | 映射为 `user` 消息；克隆模型下忽略并警告 |
 | `response_format` | string | 否 | 部分 | `mp3`（默认）/ `wav` / `pcm`；其它 400 |
-| `speed` | number | 否 | 忽略 | ≠ 1.0 时回 `speed-ignored` |
+| `speed` | number | 否 | 忽略 | 非数字 400；≠ 1.0 时回 `speed-ignored` |
 | `stream_format` | string | 否 | M3 | M2 只接受 `audio`；`sse` 返回 400 |
 | 其它 | — | 否 | 忽略 | |
 
 JSON 请求体上限同样使用 `MAX_UPLOAD_BYTES`（25 MiB），主要留给音色克隆样本。
+
+缺 `voice` 时的行为按模型区分：普通合成回落 `mimo_default` 并回 `voice-defaulted`；音色设计不传该字段；音色克隆必须提供，否则 400 `missing_voice`。
 
 ### 3.2 示例与响应
 
@@ -205,7 +207,7 @@ Cache-Control: no-store
 Transfer-Encoding: chunked
 ```
 
-不设置 `Content-Length`：上游给的是 base64 长度，解码后长度不同，由 chunked 传输。
+不主动设置 `Content-Length`：上游给的是 base64 长度，解码后长度不同。小于 2 KB 的响应由 `net/http` 自动补齐，较大响应走 chunked。
 
 ### 3.3 格式映射
 
@@ -299,6 +301,7 @@ Transfer-Encoding: chunked
 ```
 
 - `voice` 必填，内容为样本音频的 base64（`mp3` / `wav`），可带 `data:` 前缀
+- 适配层会剥离 `data:` 前缀，统一以**纯 base64** 下发；样本格式按解码后的魔数校验，不信任声明的 MIME
 - 样本建议 ≤ 30 秒；受 JSON 请求体上限约束
 - 传 `instructions` 时忽略并回 `instructions-ignored`
 - 上游要求纯 base64 还是接受 data URL，**待实测**（见第 8 节）
@@ -319,18 +322,21 @@ Transfer-Encoding: chunked
 
 ### 4.1 `GET /v1/models`
 
-只列**已实现**的模型，别名可接受但不列出。M1 只有转写：
+只列**已实现**的模型，别名可接受但不列出：
 
 ```json
 {
   "object": "list",
   "data": [
-    { "id": "mimo-v2.5-asr", "object": "model", "created": 0, "owned_by": "xiaomi" }
+    { "id": "mimo-v2.5-asr", "object": "model", "created": 0, "owned_by": "xiaomi" },
+    { "id": "mimo-v2.5-tts", "object": "model", "created": 0, "owned_by": "xiaomi" },
+    { "id": "mimo-v2.5-tts-voicedesign", "object": "model", "created": 0, "owned_by": "xiaomi" },
+    { "id": "mimo-v2.5-tts-voiceclone", "object": "model", "created": 0, "owned_by": "xiaomi" }
   ]
 }
 ```
 
-M2 上线语音合成后，再加入 `mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesign`、`mimo-v2.5-tts-voiceclone`。不提前列出会返回 404 的模型。
+不列出会返回 404 的模型；流式能力复用同一批 ID，不新增模型。
 
 `created` 固定 `0`：这些模型没有可靠的发布时间，不编造。
 
@@ -360,6 +366,7 @@ M2 上线语音合成后，再加入 `mimo-v2.5-tts`、`mimo-v2.5-tts-voicedesig
 | 400 | `invalid_request_error` | `unsupported_parameter` | 参数组合非法（如 voicedesign + voice、M2 的 `sse`、M1 的 `stream=true`） | 去掉该参数 |
 | 400 | `invalid_request_error` | `model_not_found` | 未知模型 | 换模型 |
 | 400 | `invalid_request_error` | `voice_not_found` | 未知音色 | 换音色 |
+| 400 | `invalid_request_error` | `missing_voice` | 克隆模型未提供 `voice` | 补字段 |
 | 401 | `authentication_error` | `unauthorized` | 缺 token | 补 `Authorization` |
 | 401 | `authentication_error` | `invalid_token` | token 不匹配 | 检查 token |
 | 404 | `invalid_request_error` | `not_found` | 路由不存在 | 检查路径 |

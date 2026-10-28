@@ -495,7 +495,7 @@ func TestMetaEndpoints(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if body.Object != "list" || len(body.Data) != 1 {
+		if body.Object != "list" || len(body.Data) != 4 {
 			t.Fatalf("models = %+v", body)
 		}
 		if body.Data[0].ID != "mimo-v2.5-asr" {

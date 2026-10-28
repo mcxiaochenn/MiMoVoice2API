@@ -10,7 +10,6 @@ import (
 
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/adapter"
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/audio"
-	"github.com/mcxiaochenn/MiMoVoice2API/internal/mimo"
 )
 
 // multipartOverhead 留给边界、字段名与其他表单字段；
@@ -112,19 +111,7 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.mimo.Transcribe(r.Context(), plan.Request)
 	if err != nil {
-		var upstreamErr *mimo.Error
-		if errors.As(err, &upstreamErr) {
-			info.upstreamStatus = upstreamErr.StatusCode
-			s.log.Warn("upstream call failed",
-				"request_id", requestIDFrom(r.Context()),
-				"kind", string(upstreamErr.Kind),
-				"upstream_status", upstreamErr.StatusCode,
-				"message", upstreamErr.Message,
-			)
-			s.writeAPIError(w, r, apiErrorFromUpstream(upstreamErr))
-			return
-		}
-		s.writeAPIError(w, r, newAPIError("internal_error", "", "internal server error"))
+		s.writeUpstreamError(w, r, err)
 		return
 	}
 	info.upstreamStatus = result.UpstreamStatus

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/adapter"
@@ -25,6 +26,7 @@ type errorSpec struct {
 // errorSpecs 把错误码映射为 HTTP 状态与 OpenAI 风格 type。
 var errorSpecs = map[string]errorSpec{
 	"invalid_multipart":           {http.StatusBadRequest, "invalid_request_error"},
+	"invalid_json":                {http.StatusBadRequest, "invalid_request_error"},
 	"missing_file":                {http.StatusBadRequest, "invalid_request_error"},
 	"empty_file":                  {http.StatusBadRequest, "invalid_request_error"},
 	"unsupported_audio_format":    {http.StatusBadRequest, "invalid_request_error"},
@@ -35,6 +37,7 @@ var errorSpecs = map[string]errorSpec{
 	"unsupported_parameter":       {http.StatusBadRequest, "invalid_request_error"},
 	"model_not_found":             {http.StatusBadRequest, "invalid_request_error"},
 	"voice_not_found":             {http.StatusBadRequest, "invalid_request_error"},
+	"missing_voice":               {http.StatusBadRequest, "invalid_request_error"},
 	"unauthorized":                {http.StatusUnauthorized, "authentication_error"},
 	"invalid_token":               {http.StatusUnauthorized, "authentication_error"},
 	"not_found":                   {http.StatusNotFound, "invalid_request_error"},
@@ -121,6 +124,25 @@ func (s *server) writeAPIError(w http.ResponseWriter, r *http.Request, e apiErro
 		body.Error.Param = &param
 	}
 	writeJSON(w, e.status, body)
+}
+
+// writeUpstreamError 统一记录上游失败细节，并转换成下游错误 envelope。
+func (s *server) writeUpstreamError(w http.ResponseWriter, r *http.Request, err error) {
+	var upstreamErr *mimo.Error
+	if errors.As(err, &upstreamErr) {
+		if info := requestInfoFrom(r.Context()); info != nil {
+			info.upstreamStatus = upstreamErr.StatusCode
+		}
+		s.log.Warn("upstream call failed",
+			"request_id", requestIDFrom(r.Context()),
+			"kind", string(upstreamErr.Kind),
+			"upstream_status", upstreamErr.StatusCode,
+			"message", upstreamErr.Message,
+		)
+		s.writeAPIError(w, r, apiErrorFromUpstream(upstreamErr))
+		return
+	}
+	s.writeAPIError(w, r, newAPIError("internal_error", "", "internal server error"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

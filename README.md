@@ -2,7 +2,7 @@
 
 把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
 
-> **当前状态：M1（转写可用）**。已实现非流式语音转写、模型列表与健康检查，附带 Dockerfile / Compose；语音合成（M2）、流式（M3）与 GHCR 镜像发布（M4）尚未完成。
+> **当前状态：M2（转写 + 合成可用）**。已实现非流式语音转写与合成、模型列表、健康检查，附带 Dockerfile / Compose；流式（M3）与 GHCR 镜像发布（M4）尚未完成。
 > 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 为什么需要它
@@ -41,7 +41,7 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 | `speed` | 忽略 | 上游无此参数；非 1.0 时回 `X-Adapter-Warning` |
 | `prompt` / `temperature` | 忽略 | 上游无对应能力 |
 | 流式（`stream` / `stream_format`） | M3 | M1/M2 明确拒绝 |
-| 音色克隆 / 音色设计 | M2 | 通过 `model` + `voice` / `instructions` 触发 |
+| 音色克隆 / 音色设计 | 支持 | 通过 `model` + `voice` / `instructions` 触发 |
 
 ## 快速开始
 
@@ -62,7 +62,7 @@ docker build -t mimivoice2api:dev .
 docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
 ```
 
-OpenAI Python SDK 接入（M1 起转写可用，M2 起合成可用）：
+OpenAI Python SDK 接入（转写与合成都可用，流式在 M3）：
 
 ```python
 from openai import OpenAI

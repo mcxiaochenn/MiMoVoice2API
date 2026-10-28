@@ -1,5 +1,7 @@
 package httpapi
 
+import "encoding/json"
+
 // errorEnvelope 是所有失败响应的统一结构。
 type errorEnvelope struct {
 	Error errorBody `json:"error"`
@@ -41,4 +43,15 @@ type healthResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
+}
+
+// speechRequest 里 Speed 用 RawMessage，便于把「非数字」与「未提供」区分开。
+type speechRequest struct {
+	Model          string          `json:"model"`
+	Input          string          `json:"input"`
+	Voice          string          `json:"voice"`
+	Instructions   string          `json:"instructions"`
+	ResponseFormat string          `json:"response_format"`
+	Speed          json.RawMessage `json:"speed"`
+	StreamFormat   string          `json:"stream_format"`
 }

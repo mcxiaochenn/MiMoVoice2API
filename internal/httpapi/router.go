@@ -30,6 +30,7 @@ func New(cfg config.Config, log *slog.Logger, client *mimo.Client, build BuildIn
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/audio/transcriptions", s.method(http.MethodPost, s.handleTranscriptions))
+	mux.HandleFunc("/v1/audio/speech", s.method(http.MethodPost, s.handleSpeech))
 	mux.HandleFunc("/v1/models", s.method(http.MethodGet, s.handleModels))
 	mux.HandleFunc("/healthz", s.method(http.MethodGet, s.handleHealth))
 	mux.HandleFunc("/", s.handleNotFound)
