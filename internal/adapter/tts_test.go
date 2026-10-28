@@ -226,13 +226,16 @@ func TestBuildSpeechVoiceDesign(t *testing.T) {
 
 func TestBuildSpeechVoiceClone(t *testing.T) {
 	payload := base64.StdEncoding.EncodeToString(wavHeader)
+	dataURL := "data:audio/wav;base64," + payload
 	tests := []struct {
 		name     string
 		voice    string
 		wantData string
 	}{
-		{name: "data url", voice: "data:audio/wav;base64," + payload, wantData: payload},
-		{name: "pure base64", voice: payload, wantData: payload},
+		// 上游要求 audio.voice 必须是 DataURL，纯 base64 会被拒为 Param Incorrect，
+		// 因此两种下游写法都要归一成 DataURL。
+		{name: "data url", voice: dataURL, wantData: dataURL},
+		{name: "pure base64", voice: payload, wantData: dataURL},
 	}
 
 	for _, tt := range tests {
@@ -327,18 +330,36 @@ func TestResolveVoice(t *testing.T) {
 func TestNormalizeVoiceSample(t *testing.T) {
 	wavB64 := base64.StdEncoding.EncodeToString(wavHeader)
 	mp3B64 := base64.StdEncoding.EncodeToString([]byte("ID3\x04\x00\x00\x00"))
+	wavURL := "data:audio/wav;base64," + wavB64
+	mp3URL := "data:audio/mpeg;base64," + mp3B64
 
-	if got, err := normalizeVoiceSample("data:audio/wav;base64," + wavB64); err != nil || got != wavB64 {
+	if got, err := normalizeVoiceSample(wavURL); err != nil || got != wavURL {
 		t.Errorf("wav data URL = (%q, %+v)", got, err)
 	}
-	if got, err := normalizeVoiceSample("data:audio/mpeg;base64," + mp3B64); err != nil || got != mp3B64 {
+	if got, err := normalizeVoiceSample(mp3URL); err != nil || got != mp3URL {
 		t.Errorf("mp3 data URL = (%q, %+v)", got, err)
 	}
-	if _, err := normalizeVoiceSample("data:audio/ogg;base64," + wavB64); err == nil {
-		t.Error("ogg MIME should be rejected")
+	// 纯 base64 要补全前缀，否则上游报 Param Incorrect。
+	if got, err := normalizeVoiceSample(wavB64); err != nil || got != wavURL {
+		t.Errorf("wav pure base64 = (%q, %+v), want %q", got, err, wavURL)
+	}
+	if got, err := normalizeVoiceSample(mp3B64); err != nil || got != mp3URL {
+		t.Errorf("mp3 pure base64 = (%q, %+v), want %q", got, err, mp3URL)
+	}
+	// 声明的 MIME 不参与判定，一律按魔数重写。
+	if got, err := normalizeVoiceSample("data:audio/ogg;base64," + wavB64); err != nil || got != wavURL {
+		t.Errorf("declared MIME should be ignored, got (%q, %+v)", got, err)
+	}
+	// base64 内的换行要清掉，避免带进上游请求。
+	chunked := "data:audio/wav;base64," + wavB64[:8] + "\n" + wavB64[8:]
+	if got, err := normalizeVoiceSample(chunked); err != nil || got != wavURL {
+		t.Errorf("wrapped base64 = (%q, %+v)", got, err)
 	}
 	if _, err := normalizeVoiceSample("data:audio/wav;base64,not-base64!"); err == nil {
 		t.Error("invalid base64 should be rejected")
+	}
+	if _, err := normalizeVoiceSample("data:audio/wav;base64," + base64.StdEncoding.EncodeToString([]byte("plain text"))); err == nil {
+		t.Error("non-audio payload should be rejected")
 	}
 	if _, err := normalizeVoiceSample("   "); err == nil || err.Code != "missing_voice" {
 		t.Errorf("empty sample error = %+v", err)

@@ -27,11 +27,11 @@
 
 **不做**：任何 Go 代码、Dockerfile、CI 配置。
 
-## M1 — 骨架与转写（已实现，待真实环境验收）
+## M1 — 骨架与转写（已实现，官方端点实测通过）
 
 **目标**：`/v1/audio/transcriptions` 非流式端到端可用，镜像能跑起来。
 
-**状态**：代码、单元/契约测试与 Docker 文件已完成；已用本地可执行文件对假上游完成成功链路（`json` / `text` / `verbose_json`）与失败链路（不可达、404、格式拒绝）冒烟。真实上游 key 与 Docker 实装不作为验收门槛。
+**状态**：代码、单元/契约测试与 Docker 文件已完成；本地可执行文件已对假上游完成成功与失败链路冒烟。2026-10-28 用官方 key 对 `api.xiaomimimo.com/v1` 完成真实联调：三种响应格式、`language` 收敛、上游 401 映射全部符合预期。Docker 实装不作为验收门槛。
 
 范围：
 
@@ -60,22 +60,25 @@ curl -sS localhost:8080/v1/audio/transcriptions \
 ```
 
 - [x] 本地可执行文件 + 假上游返回非空 `text`
+- [x] 官方端点真实转写返回非空文本（`你好，这是一次真实上油测试。`，2.56 s 样本）
 - [x] `response_format=text` 返回纯文本且无 JSON 包装
-- [x] `verbose_json` 的 `duration` 取自上游 `usage.seconds`
+- [x] `verbose_json` 的 `duration` 取自上游 `usage.seconds`（整数秒，与音频长度同量级）
+- [x] `language=zh-CN` 收敛为 `zh` 后再下发
 - [x] 上传 `webm` 返回 400 `unsupported_audio_format`
 - [x] 未知模型返回 400 `model_not_found`
 - [x] 无 token 返回 401，错误 token 返回 401 `invalid_token`
 - [x] 日志中没有 base64、文本内容、密钥（冒烟日志确认）
 - [x] 上游 404 / 不可达分别映射为 `upstream_bad_response` / `upstream_unreachable`
+- [x] 上游 key 无效映射为 502 `upstream_auth_error`，不向客户端下发 401
 - [x] Dockerfile 与 compose 已提供（构建运行不在验收范围）
 
-**风险**：上游 `input_audio` 对 data URL 的格式要求可能与文档有偏差 → 首个联调用例先打通最小请求，再补参数。
+**风险**：`MIMO_BASE_URL` 必须带 `/v1`，否则请求打到 `/chat/completions` 得到 404——已在 `.env.example` 与 README 标注。
 
-## M2 — 合成（已实现，本地可执行文件验收）
+## M2 — 合成（已实现，官方端点实测通过）
 
 **目标**：`/v1/audio/speech` 非流式可用，覆盖普通合成、音色设计、音色克隆。
 
-**状态**：代码与测试完成；本地可执行文件 + 假上游已跑通三种模型、三种输出格式与错误映射。真实上游的音频可播放性与克隆样本格式（Q1）仍需可选联调，不作为门槛。
+**状态**：代码与测试完成；本地可执行文件 + 假上游跑通三种模型与三种输出格式。2026-10-28 官方端点实测通过：三种格式参数确认、克隆样本 DataURL 要求已修正、长文本 760 字可用。ASR 时长上限、流式分片与并发压测仍未覆盖。
 
 范围：
 
@@ -97,17 +100,20 @@ curl -sS localhost:8080/v1/audio/speech \
 ```
 
 - [x] 本地可执行文件 + 假上游返回音频，字节与上游 base64 解码结果一致
-- [x] `wav` / `pcm` 输出头与 `Content-Type` 一致（`audio/wav`、`audio/pcm`）
-- [x] `voice=冰糖` 与 `voice=nova` 均映射到合法上游音色（请求体断言）
+- [x] 官方端点真实合成三种格式：mp3 / wav / pcm，`Content-Type` 与文件头一致
+- [x] 音频参数确认：24 kHz / 16-bit / 单声道（mp3 为 MPEG2 Layer III）
+- [x] `voice=冰糖` 与 `voice=nova` 均能真实出声（nova → 茉莉）
+- [x] `voicedesign` + `instructions` 真实生成（269 KB WAV）
 - [x] `voicedesign` 缺 `instructions` 返回 400 `missing_instructions`
 - [x] `voicedesign` 传 `voice` 返回 400 `unsupported_parameter`
 - [x] `speed=1.5` 返回音频且带 `X-Adapter-Warning: speed-ignored`
 - [x] `response_format=opus` 返回 400
-- [x] 克隆样本的 `data:` 前缀被剥离，以纯 base64 下发（请求体断言）
-- [ ] 真实上游音频可播放、`ffprobe` 识别正常（可选）
-- [ ] 回填 api-spec 第 8 节的 Q1（真实上游实测，可选）
+- [x] 克隆样本统一补全为 `data:{mime};base64,` DataURL（请求体断言 + 官方端点 200）
+- [x] 克隆支持 data URL 与纯 base64 两种下游写法，均真实出声
+- [x] 长文本合成：760 字 → 200，1.9 MB mp3，耗时 74.7 s
+- [x] 回填 api-spec 第 8 节的 Q1 / Q2 / Q3（部分）
 
-**风险**：克隆样本的传参形式未在真实上游验证；已按文档统一为纯 base64，Q1 结论不阻塞 M3。
+**风险**：已消除。克隆样本确认**必须**是 DataURL，原「剥离前缀」实现会被上游拒为 `Param Incorrect`，现已改为补全前缀并修正测试。
 
 ## M3 — 流式（复杂度 L）
 
@@ -127,7 +133,7 @@ curl -sS localhost:8080/v1/audio/speech \
 - [ ] `curl -N` 能看到连续事件，事件顺序与终止事件正确
 - [ ] 中断客户端后，上游连接在 1s 内关闭（看日志与上游用量）
 - [ ] 流式合成不再整段缓冲，首字节时间 < 非流式的 50%（同一文本实测）
-- [ ] 事件名与 OpenAI 官方文档一致（实现前复核，见 api-spec 待实测 Q5）
+- [ ] 事件名与 OpenAI 官方文档一致（实现前复核，见 api-spec 第 8 节 Q5）
 
 **风险**：base64 分片可能跨 chunk 断裂。若不能独立解码，需要维护解码缓冲，不能直接透传。
 

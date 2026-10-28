@@ -205,8 +205,9 @@ func TestSpeechVoiceClone(t *testing.T) {
 
 	captured := capture.load()
 	audioOptions := captured["audio"].(map[string]any)
-	if audioOptions["voice"] != sample {
-		t.Errorf("voice = %v, want pure base64", audioOptions["voice"])
+	// 上游要求 DataURL，适配层不能把前缀剥掉。
+	if want := "data:audio/wav;base64," + sample; audioOptions["voice"] != want {
+		t.Errorf("voice = %v, want data URL", audioOptions["voice"])
 	}
 	messages := captured["messages"].([]any)
 	if len(messages) != 1 || messages[0].(map[string]any)["role"] != "assistant" {

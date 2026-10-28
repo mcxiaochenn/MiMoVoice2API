@@ -211,12 +211,12 @@ Transfer-Encoding: chunked
 
 ### 3.3 格式映射
 
-| `response_format` | 上游 `audio.format` | 响应 `Content-Type` | 备注 |
+| `response_format` | 上游 `audio.format` | 响应 `Content-Type` | 实测参数（2026-10-28） |
 | --- | --- | --- | --- |
-| `mp3`（默认） | `mp3` | `audio/mpeg` | |
-| `wav` | `wav` | `audio/wav` | |
-| `pcm` | `pcm16` | `audio/pcm` | 16-bit 小端；采样率以上游为准，待实测 |
-| `opus` / `aac` / `flac` | — | — | 400 `unsupported_response_format` |
+| `mp3`（默认） | `mp3` | `audio/mpeg` | MPEG2 Layer III，24 kHz VBR，带 Xing/Info 头 |
+| `wav` | `wav` | `audio/wav` | 24 kHz / 16-bit / 单声道 |
+| `pcm` | `pcm16` | `audio/pcm` | 24 kHz / 16-bit 小端 / 单声道 |
+| `opus` / `aac` / `flac` | — | — | — 400 `unsupported_response_format` |
 
 ### 3.4 模型与音色
 
@@ -301,10 +301,12 @@ Transfer-Encoding: chunked
 ```
 
 - `voice` 必填，内容为样本音频的 base64（`mp3` / `wav`），可带 `data:` 前缀
-- 适配层会剥离 `data:` 前缀，统一以**纯 base64** 下发；样本格式按解码后的魔数校验，不信任声明的 MIME
-- 样本建议 ≤ 30 秒；受 JSON 请求体上限约束
+- **上游要求 `audio.voice` 必须是 DataURL**：纯 base64 会被拒为
+  `audio.voice must be a DataURL for voice clone model`。因此适配层统一**补全**
+  `data:{mime};base64,` 前缀，而不是剥离它；MIME 按解码后的魔数判定，不信任声明值
+- 样本上限 10 MB（base64 编码后）；格式仅 mp3 / wav
 - 传 `instructions` 时忽略并回 `instructions-ignored`
-- 上游要求纯 base64 还是接受 data URL，**待实测**（见第 8 节）
+- `user` 消息不影响克隆结果，适配层不额外插入
 
 ### 3.6 上行映射总表
 
@@ -480,16 +482,37 @@ Transfer-Encoding: chunked
 
 流式（`stream=true`）时音频在 `choices[0].delta.audio.data`，每片都是 base64 片段；`audio.format` 不传时默认 `pcm`。
 
-## 8. 待实测清单
+## 8. 实测结论
 
-以下结论不能靠文档推断，M1/M2 首次联调时必须用真实 key 验证，并把结果回填本文件。
+2026-10-28 用官方 key 对 `https://api.xiaomimimo.com/v1` 完成首轮联调（本地可执行文件 + 官方端点）。
 
-| 编号 | 待验证 | 验证方式 | 影响 |
+### 8.1 逐项结论
+
+| 编号 | 项目 | 结论 | 处理 |
 | --- | --- | --- | --- |
-| Q1 | `voiceclone` 的 `voice` 接受纯 base64 还是 data URL | 两种各发一次，看是否 400 | M2 克隆模式 |
-| Q2 | `pcm16` 的采样率、声道、字节序 | 合成 1 秒音频，用 `ffprobe` 检查 | `pcm` 输出声明 |
-| Q3 | 单次合成文本的实际上限 | 500 / 1000 / 2000 字逐级试，观察 `finish_reason` | `MAX_TTS_CHARS` 默认值 |
-| Q4 | ASR 音频时长上限与超限表现 | 1 / 5 / 30 分钟逐级试 | 是否需要前置时长校验 |
-| Q5 | 流式分片能否独立解码 | 抓 SSE，逐片 base64 解码拼接 | M3 透传策略 |
-| Q6 | 并发上限与 429 响应头 | 并发压测，记录 `Retry-After` | M3 重试策略 |
-| Q7 | `finish_reason=length` 的实际触发条件 | 超长文本 + 长音频 | `upstream_truncated` 判定 |
+| Q1 | 克隆样本传参 | **必须是 DataURL**。纯 base64 返回 400 `audio.voice must be a DataURL for voice clone model`；带 `data:audio/wav;base64,` 前缀即 200 | 已修：适配层由「剥离前缀」改为「补全前缀」 |
+| Q2 | `pcm16` 参数 | 24000 Hz / 16-bit / 单声道 / 小端，与 wav 一致 | 已写入 3.3 |
+| Q3 | 文本上限 | 760 字可正常合成（耗时 74.7 s，输出 1.9 MB mp3），未触及上限 | `MAX_TTS_CHARS` 保守保留 |
+| Q4 | ASR 时长上限 | 未测（仅验证 2.56 s 样本） | M3 前补 |
+| Q5 | 流式分片独立解码 | 未测 | M3 必测 |
+| Q6 | 并发与 429 | 未测 | M3 |
+| Q7 | `finish_reason=length` 触发条件 | 未测 | M3 |
+
+### 8.2 其他实测事实
+
+- **`usage.seconds` 是整数秒**（2.56 s 音频返回 3），`verbose_json` 的 `duration` 直接透传该值，因此也是整数，与 OpenAI 的浮点 `duration` 有差异。
+- **非 TTS 模型的 `message` 带 `"audio": null`**，TTS 模型的 `message.content` 是空字符串 `""`；两者都能被现有结构正确解析。
+- **mp3 是 MPEG2 Layer III**（不是 MPEG1），24 kHz，带 Xing/Info 头，帧长按 `72*bitrate/48000` 计算；用 MPEG1 的 1152 样本/帧去解析会误判为损坏文件。
+- **生成耗时随文本线性增长**：约 20 字 ≈ 2 s，760 字 ≈ 75 s。默认 180 s 超时对超长文本可能偏紧，调大 `MIMO_TIMEOUT` 可缓解。
+- **`instructions` 对普通 TTS 生效**：作为 `user` 消息下发后，未出现 `instructions-ignored` 警告。
+- **`user` 空消息不是克隆的必需条件**：不带 `user` 消息的克隆请求同样 200。
+
+### 8.3 已知不兼容的上游
+
+`sub2api` 类中转网关（仅做 OpenAI chat 响应归一化）**不能**承载本适配器：
+
+- `input_audio` content part 被静默丢弃，音频根本没到上游；
+- `message.audio` / `delta.audio` 在响应转换时被剥离，返回 200 但没有音频；
+- 网关自身的 `/v1/audio/*` 不存在（404）。
+
+适配器对这类上游会明确报错（见 6 节）：ASR 得到 `upstream_error`，TTS 得到 `upstream_bad_response`，不会返回空音频文件。

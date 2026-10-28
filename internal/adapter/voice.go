@@ -59,8 +59,9 @@ func resolveVoice(raw string) (voice string, defaulted bool, err *Error) {
 	}
 }
 
-// normalizeVoiceSample 把克隆样本统一成上游要求的纯 base64。
-// data URL 前缀可带可不带；格式按解码后的魔数判断，只接受 mp3 / wav。
+// normalizeVoiceSample 把克隆样本统一成上游要求的 DataURL 形式。
+// 上游明确要求 audio.voice 必须是 DataURL，纯 base64 会被拒为 Param Incorrect，
+// 而下游允许只传 base64，因此这里统一补全前缀；MIME 按魔数判定，不信任声明值。
 func normalizeVoiceSample(raw string) (string, *Error) {
 	sample := strings.TrimSpace(raw)
 	if sample == "" {
@@ -76,43 +77,49 @@ func normalizeVoiceSample(raw string) (string, *Error) {
 		if comma < 0 {
 			return "", invalidSampleError()
 		}
-		meta := strings.ToLower(sample[len("data:"):comma])
-		if !strings.HasSuffix(meta, ";base64") {
-			return "", invalidSampleError()
-		}
-		switch strings.TrimSuffix(meta, ";base64") {
-		case "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3":
-		default:
+		if !strings.HasSuffix(strings.ToLower(sample[len("data:"):comma]), ";base64") {
 			return "", invalidSampleError()
 		}
 		sample = sample[comma+1:]
 	}
 
-	if !isBase64Audio(sample) {
+	sample = stripWhitespace(sample)
+	format, ok := sniffSampleFormat(sample)
+	if !ok {
 		return "", invalidSampleError()
 	}
-	return sample, nil
+	return "data:" + format.MIME() + ";base64," + sample, nil
 }
 
 func invalidSampleError() *Error {
 	return &Error{
 		Code:    "unsupported_parameter",
 		Param:   "voice",
-		Message: "voice clone sample must be base64 encoded mp3 or wav; the data URL prefix is optional",
+		Message: "voice clone sample must be base64 encoded mp3 or wav, optionally wrapped in a data URL",
 	}
 }
 
-// isBase64Audio 只解码前 64 字节做魔数判断，不展开整个样本。
-func isBase64Audio(sample string) bool {
+// stripWhitespace 去掉 base64 中可能出现的换行与空格，避免拼进上游请求。
+func stripWhitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\r', '\n':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// sniffSampleFormat 只解码前 64 字节做魔数判断，不展开整个样本。
+func sniffSampleFormat(sample string) (audio.Format, bool) {
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(sample))
 	buf := make([]byte, 64)
 	n, err := io.ReadFull(decoder, buf)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return false
+		return "", false
 	}
 	if n == 0 {
-		return false
+		return "", false
 	}
-	_, ok := audio.Sniff(buf[:n])
-	return ok
+	return audio.Sniff(buf[:n])
 }

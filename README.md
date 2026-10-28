@@ -2,7 +2,7 @@
 
 把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
 
-> **当前状态：M2（转写 + 合成可用）**。已实现非流式语音转写与合成、模型列表、健康检查，附带 Dockerfile / Compose；流式（M3）与 GHCR 镜像发布（M4）尚未完成。
+> **当前状态：M2（转写 + 合成可用，官方端点实测通过）**。已实现非流式语音转写与合成、模型列表、健康检查，附带 Dockerfile / Compose；流式（M3）与 GHCR 镜像发布（M4）尚未完成。
 > 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 为什么需要它
@@ -43,18 +43,11 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 | 流式（`stream` / `stream_format`） | M3 | M1/M2 明确拒绝 |
 | 音色克隆 / 音色设计 | 支持 | 通过 `model` + `voice` / `instructions` 触发 |
 
+输出音频参数（2026-10-28 官方端点实测）：`mp3` 为 MPEG2 Layer III / 24 kHz VBR，带 Xing 头；`wav` 与 `pcm` 均为 24 kHz / 16-bit / 单声道。`pcm` 没有文件头，消费端需按这组参数解释。
+
 ## 快速开始
 
-以下命令在 M1 之后可用，当前无法执行：
-
-```bash
-docker run --rm -p 8080:8080 \
-  -e MIMO_API_KEY=sk-your-mimo-key \
-  -e AUTH_TOKEN=local-dev-token \
-  ghcr.io/mcxiaochenn/mimivoice2api:latest
-```
-
-镜像会在 M4 发布到 GHCR；在那之前用源码构建：
+`ghcr.io` 镜像将在 M4 发布；在那之前用源码构建：
 
 ```bash
 cp .env.example .env   # 填入 MIMO_API_KEY 与 AUTH_TOKEN
