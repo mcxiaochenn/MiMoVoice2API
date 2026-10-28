@@ -478,6 +478,27 @@ func TestPostRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// 流内出现异常 JSON：报 bad_response，不允许 panic 或静默吞掉。
+func TestTranscribeStreamInvalidJSONChunk(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"前\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {not-json\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	_, err := client.TranscribeStream(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"}, func(string) error {
+		return nil
+	})
+
+	var upstreamErr *Error
+	if !errors.As(err, &upstreamErr) || upstreamErr.Kind != KindBadResponse {
+		t.Fatalf("error = %v, want bad response", err)
+	}
+}
+
 // 合法响应尾随空白字符不算尾随数据。
 func TestPostAcceptsTrailingWhitespace(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

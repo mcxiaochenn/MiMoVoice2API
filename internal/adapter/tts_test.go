@@ -364,4 +364,18 @@ func TestNormalizeVoiceSample(t *testing.T) {
 	if _, err := normalizeVoiceSample("   "); err == nil || err.Code != "missing_voice" {
 		t.Errorf("empty sample error = %+v", err)
 	}
+	// 边界：data URL 结构不完整时必须拒绝，而不是把整串当 base64 猜。
+	if _, err := normalizeVoiceSample("data:audio/wav;base64"); err == nil {
+		t.Error("data URL without comma should be rejected")
+	}
+	if _, err := normalizeVoiceSample("data:audio/wav," + wavB64); err == nil {
+		t.Error("data URL without ;base64 should be rejected")
+	}
+	if _, err := normalizeVoiceSample("data:audio/wav;base64,"); err == nil {
+		t.Error("empty payload should be rejected")
+	}
+	// data: 前缀大小写不敏感，输出统一为标准小写 DataURL。
+	if got, err := normalizeVoiceSample("DATA:AUDIO/WAV;BASE64," + wavB64); err != nil || got != wavURL {
+		t.Errorf("uppercase data URL = (%q, %+v), want %q", got, err, wavURL)
+	}
 }
