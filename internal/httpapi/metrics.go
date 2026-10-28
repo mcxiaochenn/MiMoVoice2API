@@ -61,13 +61,12 @@ func (s *server) observeRequest(info *requestInfo, status int, outBytes int64, e
 		elapsed.Seconds(),
 		metrics.L("route", info.route),
 	)
-	if info.inBytes > 0 {
-		s.metrics.AddCounter(metricHTTPRequestBytes,
-			"Bytes read from request bodies, by route.",
-			float64(info.inBytes),
-			metrics.L("route", info.route),
-		)
-	}
+	// 即使本次请求体为 0 也建立序列，保证每个路由都有完整的字节指标。
+	s.metrics.AddCounter(metricHTTPRequestBytes,
+		"Bytes read from request bodies, by route.",
+		float64(info.inBytes),
+		metrics.L("route", info.route),
+	)
 	s.metrics.AddCounter(metricHTTPResponseBytes,
 		"Bytes written to response bodies, by route.",
 		float64(outBytes),
