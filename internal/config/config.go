@@ -20,22 +20,28 @@ const (
 	defaultMaxUploadBytes  = int64(25 << 20) // 25 MiB
 	defaultMaxTTSChars     = 1000
 	defaultUpstreamTimeout = 180 * time.Second
+	// defaultMaxConcurrentRequests 是并发处理上限的默认值。
+	// ASR 上传走全量缓冲，单请求峰值内存约为上传上限的 4~5 倍
+	// （multipart 缓冲 + 原始字节 + base64 + JSON），4 × 25 MiB × 4 ≈ 400 MiB
+	// 封顶，适配 1 GiB 级自托管主机；内存充裕或上传很小时可调高。
+	defaultMaxConcurrentRequests = 4
 )
 
 // Config 是服务的完整运行配置。
 type Config struct {
-	MIMOAPIKey      string
-	MIMOBaseURL     string
-	MIMOASRModel    string
-	MIMOTTSModel    string
-	ListenAddr      string
-	AuthToken       string
-	MaxUploadBytes  int64
-	MaxTTSChars     int
-	UpstreamTimeout time.Duration
-	LogLevel        slog.Level
-	LogFormat       string
-	MetricsEnabled  bool
+	MIMOAPIKey            string
+	MIMOBaseURL           string
+	MIMOASRModel          string
+	MIMOTTSModel          string
+	ListenAddr            string
+	AuthToken             string
+	MaxUploadBytes        int64
+	MaxTTSChars           int
+	MaxConcurrentRequests int
+	UpstreamTimeout       time.Duration
+	LogLevel              slog.Level
+	LogFormat             string
+	MetricsEnabled        bool
 }
 
 // Load 读取进程环境变量。
@@ -46,17 +52,18 @@ func Load() (Config, error) {
 // load 允许测试注入环境变量读取函数。
 func load(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		MIMOAPIKey:      strings.TrimSpace(getenv("MIMO_API_KEY")),
-		MIMOBaseURL:     strings.TrimRight(stringOrDefault(getenv("MIMO_BASE_URL"), defaultBaseURL), "/"),
-		MIMOASRModel:    stringOrDefault(getenv("MIMO_ASR_MODEL"), defaultASRModel),
-		MIMOTTSModel:    stringOrDefault(getenv("MIMO_TTS_MODEL"), defaultTTSModel),
-		ListenAddr:      stringOrDefault(getenv("LISTEN_ADDR"), defaultListenAddr),
-		AuthToken:       strings.TrimSpace(getenv("AUTH_TOKEN")),
-		MaxUploadBytes:  defaultMaxUploadBytes,
-		MaxTTSChars:     defaultMaxTTSChars,
-		UpstreamTimeout: defaultUpstreamTimeout,
-		LogFormat:       strings.ToLower(stringOrDefault(getenv("LOG_FORMAT"), "json")),
-		MetricsEnabled:  true,
+		MIMOAPIKey:            strings.TrimSpace(getenv("MIMO_API_KEY")),
+		MIMOBaseURL:           strings.TrimRight(stringOrDefault(getenv("MIMO_BASE_URL"), defaultBaseURL), "/"),
+		MIMOASRModel:          stringOrDefault(getenv("MIMO_ASR_MODEL"), defaultASRModel),
+		MIMOTTSModel:          stringOrDefault(getenv("MIMO_TTS_MODEL"), defaultTTSModel),
+		ListenAddr:            stringOrDefault(getenv("LISTEN_ADDR"), defaultListenAddr),
+		AuthToken:             strings.TrimSpace(getenv("AUTH_TOKEN")),
+		MaxUploadBytes:        defaultMaxUploadBytes,
+		MaxTTSChars:           defaultMaxTTSChars,
+		MaxConcurrentRequests: defaultMaxConcurrentRequests,
+		UpstreamTimeout:       defaultUpstreamTimeout,
+		LogFormat:             strings.ToLower(stringOrDefault(getenv("LOG_FORMAT"), "json")),
+		MetricsEnabled:        true,
 	}
 
 	if cfg.MIMOAPIKey == "" {
@@ -81,6 +88,14 @@ func load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("MAX_TTS_CHARS must be a positive integer, got %q", raw)
 		}
 		cfg.MaxTTSChars = v
+	}
+
+	if raw := strings.TrimSpace(getenv("MAX_CONCURRENT_REQUESTS")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			return Config{}, fmt.Errorf("MAX_CONCURRENT_REQUESTS must be a positive integer, got %q", raw)
+		}
+		cfg.MaxConcurrentRequests = v
 	}
 
 	if raw := strings.TrimSpace(getenv("METRICS_ENABLED")); raw != "" {

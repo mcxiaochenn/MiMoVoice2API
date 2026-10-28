@@ -65,6 +65,12 @@
 | `prompt-ignored` | 转写请求带 `prompt` |
 | `temperature-ignored` | 转写请求带 `temperature` |
 
+### 1.6 并发准入
+
+- 同时处理的请求数受 `MAX_CONCURRENT_REQUESTS`（默认 4）限制，超出立即返回 503 `server_busy`，不排队
+- 许可在鉴权通过后、读取请求体之前获取；请求结束（含错误、客户端取消、panic、流式中止）即释放
+- `GET /healthz` 不占额度，保证健康检查在高负载下仍可用；`/metrics` 与业务端点一样计入额度
+
 ## 2. 语音转写 `POST /v1/audio/transcriptions`
 
 `Content-Type: multipart/form-data`
@@ -498,6 +504,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 | 405 | `invalid_request_error` | `method_not_allowed` | 方法不对 | 换方法 |
 | 413 | `invalid_request_error` | `payload_too_large` | 超过 `MAX_UPLOAD_BYTES` | 压缩或分段 |
 | 429 | `rate_limit_error` | `rate_limited` | 上游 429 | 按 `Retry-After` 退避 |
+| 503 | `api_error` | `server_busy` | 并发请求数达到 `MAX_CONCURRENT_REQUESTS` | 稍后重试或降低并发 |
 | 500 | `api_error` | `internal_error` | 未捕获异常 | 反馈并附 `X-Request-ID` |
 | 502 | `api_error` | `upstream_invalid_request` | 上游 400/422 | 反馈，属于映射缺陷 |
 | 502 | `api_error` | `upstream_auth_error` | 上游 401/403 | 运维检查 `MIMO_API_KEY` |

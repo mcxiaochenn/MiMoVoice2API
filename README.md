@@ -131,6 +131,7 @@ curl -sS -N localhost:8080/v1/audio/speech \
 | `AUTH_TOKEN` | 空 | 下游 Bearer token；留空表示不校验，仅限本机调试 |
 | `MAX_UPLOAD_BYTES` | `26214400`（25 MiB） | 上传音频上限，超限 413 |
 | `MAX_TTS_CHARS` | `1000` | 单次合成文本字符上限 |
+| `MAX_CONCURRENT_REQUESTS` | `4` | 并发处理上限，超出 503 `server_busy`；`/healthz` 不占额度 |
 | `UPSTREAM_TIMEOUT` | `180s` | 单次上游请求总超时 |
 | `METRICS_ENABLED` | `true` | 是否暴露 `/metrics`；关闭后该路径返回 404 |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -166,6 +167,7 @@ curl -sS localhost:8080/metrics -H "Authorization: Bearer $AUTH_TOKEN" | head -2
 | `413 payload_too_large` | 上传超过 `MAX_UPLOAD_BYTES`（默认 25 MiB） | 调大限制或先压缩音频；multipart 边界也计入总量 |
 | `400 unsupported_audio_format` | 传了 webm / m4a / ogg / flac，或扩展名伪装 | 先用 ffmpeg 转 mp3 / wav，本服务不做转码 |
 | `429 rate_limited` | 上游限流，且没有可用的 `Retry-After` 或等待超过 10s | 降低并发；能重试时响应头会带 `Retry-After` |
+| `503 server_busy` | 并发达到 `MAX_CONCURRENT_REQUESTS`（默认 4） | 稍后重试，或调大该值 / 降低客户端并发 |
 | `502 upstream_auth_error` | `MIMO_API_KEY` 无效或过期 | 换 key；这里故意不用 401，避免客户端误清自己的 token |
 | `502 upstream_bad_response` | 上游 200 但没有音频 / choices，或 JSON 不可解析 | 常见于把本项目接到会丢弃 `audio` 字段的中转网关，换成官方端点 |
 | `504 upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 缩短文本或调大超时；流式响应不受写超时限制 |

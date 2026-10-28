@@ -36,6 +36,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxTTSChars != 1000 {
 		t.Errorf("MaxTTSChars = %d", cfg.MaxTTSChars)
 	}
+	if cfg.MaxConcurrentRequests != 4 {
+		t.Errorf("MaxConcurrentRequests = %d, want 4", cfg.MaxConcurrentRequests)
+	}
 	if cfg.UpstreamTimeout != 180*time.Second {
 		t.Errorf("UpstreamTimeout = %v", cfg.UpstreamTimeout)
 	}
@@ -55,18 +58,19 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := loadFrom(t, map[string]string{
-		"MIMO_API_KEY":     "  key  ",
-		"MIMO_BASE_URL":    "http://127.0.0.1:9000/v1/",
-		"MIMO_ASR_MODEL":   "custom-asr",
-		"MIMO_TTS_MODEL":   "custom-tts",
-		"LISTEN_ADDR":      "127.0.0.1:8088",
-		"AUTH_TOKEN":       "secret",
-		"MAX_UPLOAD_BYTES": "1048576",
-		"MAX_TTS_CHARS":    "500",
-		"UPSTREAM_TIMEOUT": "30s",
-		"LOG_LEVEL":        "DEBUG",
-		"LOG_FORMAT":       "text",
-		"METRICS_ENABLED":  "false",
+		"MIMO_API_KEY":            "  key  ",
+		"MIMO_BASE_URL":           "http://127.0.0.1:9000/v1/",
+		"MIMO_ASR_MODEL":          "custom-asr",
+		"MIMO_TTS_MODEL":          "custom-tts",
+		"LISTEN_ADDR":             "127.0.0.1:8088",
+		"AUTH_TOKEN":              "secret",
+		"MAX_UPLOAD_BYTES":        "1048576",
+		"MAX_TTS_CHARS":           "500",
+		"MAX_CONCURRENT_REQUESTS": "16",
+		"UPSTREAM_TIMEOUT":        "30s",
+		"LOG_LEVEL":               "DEBUG",
+		"LOG_FORMAT":              "text",
+		"METRICS_ENABLED":         "false",
 	})
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
@@ -92,6 +96,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.MaxTTSChars != 500 {
 		t.Errorf("MaxTTSChars = %d", cfg.MaxTTSChars)
+	}
+	if cfg.MaxConcurrentRequests != 16 {
+		t.Errorf("MaxConcurrentRequests = %d, want 16", cfg.MaxConcurrentRequests)
 	}
 	if cfg.UpstreamTimeout != 30*time.Second {
 		t.Errorf("UpstreamTimeout = %v", cfg.UpstreamTimeout)
@@ -137,6 +144,16 @@ func TestLoadErrors(t *testing.T) {
 			name:    "zero upload limit",
 			env:     map[string]string{"MIMO_API_KEY": "k", "MAX_UPLOAD_BYTES": "0"},
 			wantSub: "MAX_UPLOAD_BYTES",
+		},
+		{
+			name:    "non numeric concurrency limit",
+			env:     map[string]string{"MIMO_API_KEY": "k", "MAX_CONCURRENT_REQUESTS": "many"},
+			wantSub: "MAX_CONCURRENT_REQUESTS",
+		},
+		{
+			name:    "zero concurrency limit",
+			env:     map[string]string{"MIMO_API_KEY": "k", "MAX_CONCURRENT_REQUESTS": "0"},
+			wantSub: "MAX_CONCURRENT_REQUESTS",
 		},
 		{
 			name:    "bad duration",
