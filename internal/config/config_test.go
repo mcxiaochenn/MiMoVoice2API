@@ -158,6 +158,48 @@ func TestLoadOverrides(t *testing.T) {
 	}
 }
 
+func TestValidateBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{name: "官方地址", raw: "https://api.xiaomimimo.com/v1"},
+		{name: "本地测试桩", raw: "http://127.0.0.1:9000/v1"},
+		{name: "代理带路径前缀", raw: "https://proxy.example.com/mimo/v1"},
+		{name: "尾部斜杠", raw: "https://api.xiaomimimo.com/v1/"},
+		{name: "缺少版本段", raw: "https://api.example.com", wantErr: "/v1"},
+		{name: "版本段不是最后一段", raw: "https://api.example.com/v1/chat", wantErr: "/v1"},
+		{name: "版本号不对", raw: "https://api.example.com/v2", wantErr: "/v1"},
+		{name: "前缀吞掉斜杠", raw: "https://api.example.com/xv1", wantErr: "/v1"},
+		{name: "带 query", raw: "https://api.example.com/v1?key=1", wantErr: "query"},
+		{name: "带空 query", raw: "https://api.example.com/v1?", wantErr: "query"},
+		{name: "带 fragment", raw: "https://api.example.com/v1#frag", wantErr: "fragment"},
+		{name: "带 userinfo", raw: "https://user:pass@api.example.com/v1", wantErr: "userinfo"},
+		{name: "协议错误", raw: "ftp://api.example.com/v1", wantErr: "http or https"},
+		{name: "缺少 host", raw: "https:///v1", wantErr: "host"},
+		{name: "非法 URL", raw: "http://[::1/v1", wantErr: "valid URL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBaseURL(tt.raw)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateBaseURL(%q) error = %v", tt.raw, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateBaseURL(%q) error = nil, want %q", tt.raw, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadErrors(t *testing.T) {
 	tests := []struct {
 		name    string

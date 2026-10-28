@@ -196,5 +196,21 @@ func validateBaseURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("MIMO_BASE_URL must include a host, got %q", raw)
 	}
+	// 代理地址也不该把凭据写进 URL：它们会出现在错误日志与请求行里。
+	if u.User != nil {
+		return fmt.Errorf("MIMO_BASE_URL must not contain userinfo (user:password@), got %q", raw)
+	}
+	if u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("MIMO_BASE_URL must not contain a query string, got %q", raw)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("MIMO_BASE_URL must not contain a fragment, got %q", raw)
+	}
+	// 客户端在基址后追加 /chat/completions，所以路径必须以 /v1 版本段收尾；
+	// 允许自定义前缀（如 https://proxy.example.com/mimo/v1），尾部斜杠忽略。
+	path := strings.TrimRight(u.Path, "/")
+	if !strings.HasSuffix(path, "/v1") {
+		return fmt.Errorf("MIMO_BASE_URL must end with the /v1 version segment (for example https://api.xiaomimimo.com/v1), got %q", raw)
+	}
 	return nil
 }
