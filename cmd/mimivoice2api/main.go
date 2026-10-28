@@ -70,6 +70,7 @@ func run() error {
 		"version", version,
 		"commit", commit,
 		"auth_enabled", cfg.AuthToken != "",
+		"metrics_enabled", cfg.MetricsEnabled,
 		"upstream", cfg.MIMOBaseURL,
 		"max_upload_bytes", cfg.MaxUploadBytes,
 	)

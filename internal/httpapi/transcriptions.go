@@ -74,7 +74,6 @@ func (s *server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 		s.writeAPIError(w, r, newAPIError("empty_file", "file", "uploaded file is empty"))
 		return
 	}
-	info.inBytes = int64(len(data))
 
 	format, ok := audio.Sniff(data)
 	if !ok {

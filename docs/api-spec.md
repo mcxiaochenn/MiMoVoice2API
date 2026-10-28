@@ -9,6 +9,7 @@
 
 - 基址：`http://<host>:8080/v1`，与 OpenAI SDK 的 `base_url` 对齐
 - 鉴权：`Authorization: Bearer <AUTH_TOKEN>`；`AUTH_TOKEN` 为空时不校验（仅限本机调试）
+- 免鉴权路径：仅 `GET /healthz`。`GET /metrics` 与业务端点一样需要 token
 - 上游鉴权：服务端使用 `Authorization: Bearer <MIMO_API_KEY>`，密钥不出服务端
 
 ### 1.2 请求头
@@ -415,6 +416,59 @@ data: {"type":"speech.audio.error","error":{"message":"...","type":"api_error","
 ```
 
 不检查上游连通性：健康检查只反映本进程状态，避免上游抖动导致容器被反复重启。上游可用性由实际请求的错误码体现。
+
+### 4.3 `GET /metrics`
+
+Prometheus 文本格式（`text/plain; version=0.0.4`），需要 `Authorization: Bearer <AUTH_TOKEN>`。
+`METRICS_ENABLED=false` 时该路径不注册，返回 404 `not_found`。
+
+| 指标 | 类型 | 标签 | 含义 |
+| --- | --- | --- | --- |
+| `mimo_voice2api_http_requests_total` | counter | `route`、`status`、`err_code` | 下游请求数；成功时 `err_code="none"` |
+| `mimo_voice2api_http_request_duration_seconds` | histogram | `route` | 下游端到端耗时 |
+| `mimo_voice2api_http_request_bytes_total` | counter | `route` | 实际读入的请求体字节数 |
+| `mimo_voice2api_http_response_bytes_total` | counter | `route` | 写出的响应体字节数（含 SSE 事件文本） |
+| `mimo_voice2api_http_in_flight_requests` | gauge | — | 正在处理的请求数；抓取请求本身也计入 |
+| `mimo_voice2api_upstream_requests_total` | counter | `kind`、`status` | 上游**尝试**次数；429 重试会再 +1 |
+| `mimo_voice2api_upstream_latency_seconds` | histogram | `kind` | 上游从发出请求到收到响应头的时间，不含流式读取 |
+| `mimo_voice2api_build_info` | gauge | `version`、`commit` | 恒为 1，用于关联版本 |
+| `mimo_voice2api_go_goroutines` | gauge | — | 当前 goroutine 数，用于查泄漏 |
+| `mimo_voice2api_go_heap_alloc_bytes` | gauge | — | 已分配堆对象字节数 |
+| `mimo_voice2api_go_heap_sys_bytes` | gauge | — | 从 OS 取得的堆内存字节数 |
+| `mimo_voice2api_process_start_time_seconds` | gauge | — | 进程启动时间（Unix 秒） |
+
+`kind` 取值：`ok`、`timeout`、`canceled`、`unreachable`、`auth`、`invalid_request`、`rate_limited`、`server`、`bad_response`、`truncated`。
+`status` 为上游 HTTP 状态码，传输层失败时为 `0`。
+
+直方图桶（秒）：`0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300`，另有 `+Inf`。
+
+抓取配置示例：
+
+```yaml
+scrape_configs:
+  - job_name: mimivoice2api
+    authorization:
+      type: Bearer
+      credentials: <AUTH_TOKEN>
+    static_configs:
+      - targets: ["mimivoice2api:8080"]
+```
+
+常用查询：
+
+```promql
+# 5 分钟错误率
+sum(rate(mimo_voice2api_http_requests_total{err_code!="none"}[5m]))
+  / sum(rate(mimo_voice2api_http_requests_total[5m]))
+
+# 合成端到端 P95
+histogram_quantile(0.95,
+  sum by (le) (rate(mimo_voice2api_http_request_duration_seconds_bucket{route="speech"}[5m])))
+
+# 上游按错误类型
+sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
+```
+
 
 ## 5. 错误
 

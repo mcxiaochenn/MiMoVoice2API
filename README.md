@@ -1,8 +1,10 @@
 # MiMoVoice2API
 
+[![CI](https://github.com/mcxiaochenn/MiMoVoice2API/actions/workflows/ci.yml/badge.svg)](https://github.com/mcxiaochenn/MiMoVoice2API/actions/workflows/ci.yml)
+
 把小米 MiMo 开放平台的语音识别与语音合成，翻译成 OpenAI 兼容的 `/v1/audio/transcriptions` 与 `/v1/audio/speech`。单个 Go 二进制，Docker 部署。
 
-> **当前状态：M3（转写 + 合成 + 流式，官方端点实测通过）**。已实现转写与合成（含 SSE / chunked 流式）、模型列表、健康检查，附带 Dockerfile / Compose；GHCR 镜像发布（M4）尚未完成。
+> **当前状态：M4（转写、合成、流式、指标与镜像发布）**。转写与合成（含 SSE / chunked 流式）、模型列表、健康检查、Prometheus 指标均已实现；tag `v*` 触发 GHCR 多架构镜像发布与二进制附件。
 > 接口契约见 [docs/api-spec.md](docs/api-spec.md)，实施节奏见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 为什么需要它
@@ -18,12 +20,13 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 
 ## 端点
 
-| 方法 | 路径 | 说明 | 里程碑 |
-| --- | --- | --- | --- |
-| POST | `/v1/audio/transcriptions` | 语音转写，`multipart/form-data` | 非流式 + `stream=true` SSE |
-| POST | `/v1/audio/speech` | 语音合成，JSON 进、音频流出 | 非流式 + `stream_format=audio` / `sse` |
-| GET | `/v1/models` | 可用模型列表 | M1 |
-| GET | `/healthz` | 健康检查（含版本号） | M1 |
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/v1/audio/transcriptions` | 语音转写，`multipart/form-data`；支持 `stream=true` SSE |
+| POST | `/v1/audio/speech` | 语音合成，JSON 进、音频流出；`stream_format=audio` / `sse` |
+| GET | `/v1/models` | 可用模型列表 |
+| GET | `/healthz` | 健康检查（含版本号），免鉴权 |
+| GET | `/metrics` | Prometheus 指标，需要鉴权 |
 
 客户端 `base_url` 填 `http://<host>:8080/v1`。
 
@@ -49,10 +52,28 @@ MiMo 的语音能力只暴露在 `POST /v1/chat/completions` 上：
 
 ## 快速开始
 
-`ghcr.io` 镜像将在 M4 发布；在那之前用源码构建：
+镜像随 tag 发布到 GHCR（`linux/amd64` 与 `linux/arm64`）：
+
+```bash
+docker run -d --name mimivoice2api \
+  -p 127.0.0.1:8080:8080 \
+  -e MIMO_API_KEY=sk-your-mimo-key \
+  -e AUTH_TOKEN=local-dev-token \
+  --read-only --tmpfs /tmp --cap-drop ALL \
+  --security-opt no-new-privileges \
+  ghcr.io/mcxiaochenn/mimivoice2api:latest
+```
+
+或者用 [docker-compose.yml](docker-compose.yml)（已包含只读根、cap_drop、非 root、日志轮转）：
 
 ```bash
 cp .env.example .env   # 填入 MIMO_API_KEY 与 AUTH_TOKEN
+docker compose up -d
+```
+
+从源码构建：
+
+```bash
 docker build -t mimivoice2api:dev .
 docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
 ```
@@ -111,8 +132,46 @@ curl -sS -N localhost:8080/v1/audio/speech \
 | `MAX_UPLOAD_BYTES` | `26214400`（25 MiB） | 上传音频上限，超限 413 |
 | `MAX_TTS_CHARS` | `1000` | 单次合成文本字符上限 |
 | `UPSTREAM_TIMEOUT` | `180s` | 单次上游请求总超时 |
+| `METRICS_ENABLED` | `true` | 是否暴露 `/metrics`；关闭后该路径返回 404 |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LOG_FORMAT` | `json` | `json` / `text` |
+
+## 可观测性
+
+结构化日志默认 JSON，固定字段：`request_id`、`route`、`status`、`dur_ms`、`in_bytes`、`out_bytes`、`model_requested`、`model_upstream`、`upstream_status`、`err_code`。不记录音频、转写文本、合成文本与密钥。
+
+`/metrics` 输出 Prometheus 文本格式，与业务端点一样需要 Bearer token：
+
+```bash
+curl -sS localhost:8080/metrics -H "Authorization: Bearer $AUTH_TOKEN" | head -20
+```
+
+| 指标 | 用途 |
+| --- | --- |
+| `mimo_voice2api_http_requests_total{route,status,err_code}` | 请求量与错误率，成功时 `err_code="none"` |
+| `mimo_voice2api_http_request_duration_seconds{route}` | 端到端时延直方图 |
+| `mimo_voice2api_upstream_requests_total{kind,status}` | 上游错误分类；429 重试会计两次 |
+| `mimo_voice2api_upstream_latency_seconds{kind}` | 上游到响应头的时延 |
+| `mimo_voice2api_http_in_flight_requests` | 在途请求数 |
+| `mimo_voice2api_go_goroutines` / `..._go_heap_alloc_bytes` | 泄漏排查 |
+
+完整指标列表、抓取配置与 PromQL 示例见 [docs/api-spec.md](docs/api-spec.md#43-get-metrics)。
+
+## 故障排查
+
+| 现象 | 可能原因 | 处理 |
+| --- | --- | --- |
+| `401 unauthorized` | 请求没带 `Authorization` 头 | 补 `Bearer <AUTH_TOKEN>` |
+| `401 invalid_token` | 客户端 token 与 `AUTH_TOKEN` 不一致 | 对齐两边，注意复制时的空格与换行 |
+| `413 payload_too_large` | 上传超过 `MAX_UPLOAD_BYTES`（默认 25 MiB） | 调大限制或先压缩音频；multipart 边界也计入总量 |
+| `400 unsupported_audio_format` | 传了 webm / m4a / ogg / flac，或扩展名伪装 | 先用 ffmpeg 转 mp3 / wav，本服务不做转码 |
+| `429 rate_limited` | 上游限流，且没有可用的 `Retry-After` 或等待超过 10s | 降低并发；能重试时响应头会带 `Retry-After` |
+| `502 upstream_auth_error` | `MIMO_API_KEY` 无效或过期 | 换 key；这里故意不用 401，避免客户端误清自己的 token |
+| `502 upstream_bad_response` | 上游 200 但没有音频 / choices，或 JSON 不可解析 | 常见于把本项目接到会丢弃 `audio` 字段的中转网关，换成官方端点 |
+| `504 upstream_timeout` | 超过 `UPSTREAM_TIMEOUT` | 缩短文本或调大超时；流式响应不受写超时限制 |
+| 容器反复重启 | `/healthz` 不通 | 看启动日志，多为 `MIMO_API_KEY` 缺失或地址格式错误 |
+
+排查顺序：先看日志里的 `request_id` 与 `err_code`，再用同一个 `request_id` 对照上游响应；`/metrics` 的 `upstream_requests_total{kind=...}` 能直接区分本地校验失败与上游失败。
 
 ## 接口映射速查
 
@@ -148,9 +207,11 @@ MIMO_API_KEY=sk-your-key AUTH_TOKEN=dev-token go run ./cmd/mimivoice2api
 go vet ./...
 go test ./...
 gofmt -l .
+
+curl -sS localhost:8080/metrics -H "Authorization: Bearer dev-token" | head
 ```
 
-`go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行。
+`go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行。CI 还会检查 `gofmt`、跑 `vet`，并用 buildx 验证 `linux/amd64` + `linux/arm64` 都能构建；推送 `v*` tag 才会真正发镜像。
 
 验收以本地 `go build` 产物 + curl 冒烟为准，不要求 Docker 实装测试。也可以先 `go build -o bin/mimivoice2api ./cmd/mimivoice2api` 再直接运行。
 
@@ -163,7 +224,8 @@ cmd/mimivoice2api/    入口，只做装配
 internal/config/      环境变量 → Config
 internal/httpapi/     路由、中间件、handler、错误 envelope
 internal/adapter/     纯映射函数与别名表，不认识 HTTP
-internal/mimo/        上游客户端与协议类型
+internal/mimo/        上游客户端、SSE 解析与协议类型
+internal/metrics/     零依赖 Prometheus 文本格式实现
 internal/audio/       魔数嗅探与 MIME 映射
 docs/                 设计与契约
 ```

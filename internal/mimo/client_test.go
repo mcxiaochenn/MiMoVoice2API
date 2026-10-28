@@ -136,3 +136,66 @@ func TestRetryOnlyOnce(t *testing.T) {
 		t.Errorf("calls = %d, want 2 (one retry only)", calls)
 	}
 }
+
+func TestObserverSeesSuccessAndFailures(t *testing.T) {
+	type event struct {
+		kind   string
+		status int
+	}
+	var events []event
+
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error": {"message": "slow down"}}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}`)
+		}
+	}))
+	defer upstream.Close()
+
+	client := New(upstream.URL, "test-key", 5*time.Second)
+	client.SetObserver(func(kind string, status int, _ time.Duration) {
+		events = append(events, event{kind: kind, status: status})
+	})
+
+	if _, err := client.Transcribe(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"}); err != nil {
+		t.Fatalf("Transcribe error = %v", err)
+	}
+
+	want := []event{{"rate_limited", 429}, {"ok", 200}}
+	if len(events) != len(want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Errorf("event[%d] = %+v, want %+v", i, events[i], want[i])
+		}
+	}
+}
+
+func TestObserverSeesTransportFailure(t *testing.T) {
+	var (
+		gotKind   string
+		gotStatus int = -1
+	)
+	client := New("http://127.0.0.1:1", "test-key", 2*time.Second)
+	client.SetObserver(func(kind string, status int, _ time.Duration) {
+		gotKind, gotStatus = kind, status
+	})
+
+	_, err := client.Transcribe(context.Background(), ChatRequest{Model: "mimo-v2.5-asr"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if gotStatus != 0 {
+		t.Errorf("status = %d, want 0", gotStatus)
+	}
+	if gotKind != string(KindUnreachable) && gotKind != string(KindTimeout) {
+		t.Errorf("kind = %q", gotKind)
+	}
+}

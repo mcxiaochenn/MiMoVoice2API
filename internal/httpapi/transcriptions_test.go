@@ -32,6 +32,7 @@ func testConfig(upstreamURL string) config.Config {
 		UpstreamTimeout: 5 * time.Second,
 		LogLevel:        slog.LevelError,
 		LogFormat:       "json",
+		MetricsEnabled:  true,
 	}
 }
 

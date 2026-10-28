@@ -73,11 +73,17 @@ type Speech struct {
 	UpstreamStatus int
 }
 
+// Observer 接收每一次上游尝试的结果，供指标采集使用。
+// kind 为 "ok" 或 ErrorKind，status 为 HTTP 状态码（传输失败时为 0）。
+// 实现必须并发安全，并应尽快返回：它运行在请求路径上。
+type Observer func(kind string, status int, elapsed time.Duration)
+
 // Client 是 MiMo /chat/completions 的最小客户端。
 type Client struct {
-	baseURL string
-	apiKey  string
-	http    *http.Client
+	baseURL  string
+	apiKey   string
+	http     *http.Client
+	observer Observer
 }
 
 // New 构造客户端；timeout 覆盖连接、写入与读取全过程。
@@ -87,6 +93,11 @@ func New(baseURL, apiKey string, timeout time.Duration) *Client {
 		apiKey:  apiKey,
 		http:    &http.Client{Timeout: timeout},
 	}
+}
+
+// SetObserver 安装上游观测回调。只应在开始服务前调用。
+func (c *Client) SetObserver(fn Observer) {
+	c.observer = fn
 }
 
 // Transcribe 调用上游完成一次语音识别。
@@ -189,7 +200,20 @@ func (c *Client) doOnce(ctx context.Context, req ChatRequest, accept string) (*h
 	httpReq.Header.Set("Accept", accept)
 	httpReq.Header.Set("User-Agent", userAgent)
 
+	start := time.Now()
 	resp, err := c.http.Do(httpReq)
+	if c.observer != nil {
+		if err != nil {
+			e := classifyTransportError(err)
+			c.observer(string(e.Kind), 0, time.Since(start))
+		} else {
+			kind := "ok"
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				kind = string(classifyStatus(resp.StatusCode))
+			}
+			c.observer(kind, resp.StatusCode, time.Since(start))
+		}
+	}
 	if err != nil {
 		return nil, classifyTransportError(err)
 	}

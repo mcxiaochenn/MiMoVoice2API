@@ -191,14 +191,28 @@ httpapi 输出 {"error": {...}}，并写 X-Request-ID
 | `model_upstream` | 实际发往 MiMo 的模型 ID |
 | `status` | 下游 HTTP 状态码 |
 | `dur_ms` | 端到端耗时 |
-| `in_bytes` | 上传音频字节数（不是 base64 长度） |
-| `out_bytes` | 返回音频字节数 |
+| `in_bytes` | 实际读入的请求体字节数（multipart 时含边界与其它字段，不是 base64 长度） |
+| `out_bytes` | 整体写出的字节数（音频或 SSE 事件文本） |
 | `upstream_status` | 上游 HTTP 状态码 |
 | `err_code` | 归一化错误码 |
 
 禁止记录：音频字节、base64、转写文本、合成文本、API Key、完整请求头。
 
-M1 只做结构化日志；Prometheus 指标（请求数、时延直方图、上游错误率）放 M4。
+### 10.1 指标
+
+`internal/metrics` 是一个零依赖的 Prometheus 文本格式实现（计数器、gauge、直方图），
+不引入 `client_golang`，保持「单个静态二进制、无第三方依赖」的边界。
+
+采集点在两处：
+
+- `withAccessLog`：请求计数（`route` × `status` × `err_code`）、端到端时延直方图、请求/响应字节数、在途 gauge
+- `mimo.Client` 的 observer：每次上游**尝试**的结果与到响应头耗时；429 重试会记录两次，这是刻意的，便于区分「下游请求数」与「上游压力」
+
+`/metrics` 自身需要鉴权（`AUTH_TOKEN`），避免用量数据泄露。在途 gauge 在抓取时会包含抓取请求本身，
+基线为 1 而非 0。运行时的 goroutine 与堆指标在抓取时用 `runtime.ReadMemStats` 现取，不做后台轮询。
+
+标签基数受控：`route` 是固定枚举，`status` 只会出现本项目定义的状态码，`err_code` 来自固定错误码表，
+`kind` 来自 `mimo.ErrorKind`，都不接受用户输入。
 
 ## 11. 部署形态
 
@@ -206,12 +220,13 @@ M1 只做结构化日志；Prometheus 指标（请求数、时延直方图、上
 
 - 多阶段：`golang:1.26-alpine` 构建 → `alpine:3` 运行（需要 `ca-certificates` 与 `wget` 做健康检查）
 - 构建参数：`CGO_ENABLED=0`、`-trimpath`、`-ldflags "-s -w -X main.version=... -X main.commit=..."`
+- 发布：tag `v*` 触发 buildx，产出 `linux/amd64` 与 `linux/arm64` 双架构镜像到 GHCR
 
 ```dockerfile
-# M1 落地，示意
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+# 零第三方依赖，没有 go.sum；保留这一步是为了依赖出现时缓存仍然有效
+COPY go.mod ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
@@ -222,7 +237,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM alpine:3
 RUN apk add --no-cache ca-certificates tzdata \
- && addgroup -g 10001 app && adduser -u 10001 -G app -S app
+ && addgroup -g 10001 app && adduser -u 10001 -G app -S -D app
 COPY --from=build /out/mimivoice2api /app/mimivoice2api
 USER 10001:10001
 EXPOSE 8080
@@ -231,13 +246,12 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
 ENTRYPOINT ["/app/mimivoice2api"]
 ```
 
-- 目标体积：< 25 MB
+- 目标体积：< 25 MB（实际约 15 MB，`-s -w` 后的静态二进制约 7 MB + alpine 基础层）
 - 不用 distroless：需要 `wget` 做 HEALTHCHECK，且国内拉取 `gcr.io` 不稳定
 
 ### 11.2 Compose
 
 ```yaml
-# M1 落地，示意
 services:
   mimivoice2api:
     image: ghcr.io/mcxiaochenn/mimivoice2api:latest
@@ -251,12 +265,19 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    pids_limit: 256
+    stop_grace_period: 15s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 3s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
 
 端口默认只绑 `127.0.0.1`，对外暴露交给反代（Caddy / Nginx）处理 TLS。

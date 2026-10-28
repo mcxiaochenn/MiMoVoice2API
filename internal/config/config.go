@@ -35,6 +35,7 @@ type Config struct {
 	UpstreamTimeout time.Duration
 	LogLevel        slog.Level
 	LogFormat       string
+	MetricsEnabled  bool
 }
 
 // Load 读取进程环境变量。
@@ -55,6 +56,7 @@ func load(getenv func(string) string) (Config, error) {
 		MaxTTSChars:     defaultMaxTTSChars,
 		UpstreamTimeout: defaultUpstreamTimeout,
 		LogFormat:       strings.ToLower(stringOrDefault(getenv("LOG_FORMAT"), "json")),
+		MetricsEnabled:  true,
 	}
 
 	if cfg.MIMOAPIKey == "" {
@@ -79,6 +81,14 @@ func load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("MAX_TTS_CHARS must be a positive integer, got %q", raw)
 		}
 		cfg.MaxTTSChars = v
+	}
+
+	if raw := strings.TrimSpace(getenv("METRICS_ENABLED")); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("METRICS_ENABLED must be true or false, got %q", raw)
+		}
+		cfg.MetricsEnabled = v
 	}
 
 	if raw := strings.TrimSpace(getenv("UPSTREAM_TIMEOUT")); raw != "" {

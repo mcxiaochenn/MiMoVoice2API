@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/config"
+	"github.com/mcxiaochenn/MiMoVoice2API/internal/metrics"
 	"github.com/mcxiaochenn/MiMoVoice2API/internal/mimo"
 )
 
@@ -18,21 +19,38 @@ type BuildInfo struct {
 }
 
 type server struct {
-	cfg   config.Config
-	log   *slog.Logger
-	mimo  *mimo.Client
-	build BuildInfo
+	cfg     config.Config
+	log     *slog.Logger
+	mimo    *mimo.Client
+	build   BuildInfo
+	metrics *metrics.Registry
 }
 
 // New 组装路由与中间件，返回可直接交给 http.Server 的 Handler。
 func New(cfg config.Config, log *slog.Logger, client *mimo.Client, build BuildInfo) http.Handler {
 	s := &server{cfg: cfg, log: log, mimo: client, build: build}
 
+	if cfg.MetricsEnabled {
+		s.metrics = metrics.New()
+		s.metrics.SetGauge(metricBuildInfo,
+			"Build information; the value is always 1.",
+			1,
+			metrics.L("version", build.Version),
+			metrics.L("commit", build.Commit),
+		)
+		if client != nil {
+			client.SetObserver(s.observeUpstream)
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/audio/transcriptions", s.method(http.MethodPost, s.handleTranscriptions))
 	mux.HandleFunc("/v1/audio/speech", s.method(http.MethodPost, s.handleSpeech))
 	mux.HandleFunc("/v1/models", s.method(http.MethodGet, s.handleModels))
 	mux.HandleFunc("/healthz", s.method(http.MethodGet, s.handleHealth))
+	if s.metrics != nil {
+		mux.HandleFunc("/metrics", s.method(http.MethodGet, s.handleMetrics))
+	}
 	mux.HandleFunc("/", s.handleNotFound)
 
 	// 顺序：request id → 访问日志 → panic 恢复 → 鉴权 → 路由。

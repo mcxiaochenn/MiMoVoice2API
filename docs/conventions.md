@@ -2,7 +2,7 @@
 
 ## 1. 目标态目录树
 
-标注为该目录出现的里程碑；M1 已落地 `cmd/`、`internal/` 与 Docker 文件，M2/M3 的文件尚未创建。
+标注为该目录出现的里程碑；M0–M4 已全部落地，下面的树就是当前实际结构（唯一例外是测试文件未列出）。
 
 ```text
 MiMoVoice2API/
@@ -10,12 +10,16 @@ MiMoVoice2API/
 ├── README.md                     M0   项目说明与使用入口
 ├── .env.example                  M0   配置样例（只有占位值）
 ├── .gitignore                    M0
+├── .gitattributes                M1   统一 LF，标记二进制样例
+├── .github/workflows/
+│   ├── ci.yml                    M4   gofmt / vet / test -race / 双架构构建
+│   └── release.yml               M4   tag 触发 GHCR 推送、release 与二进制附件
 ├── docs/
 │   ├── architecture.md           M0   架构、流水线、内存与部署
 │   ├── api-spec.md               M0   下游契约与上游映射（唯一事实来源）
 │   ├── conventions.md            M0   本文件
 │   └── roadmap.md                M0   里程碑与验收
-├── go.mod / go.sum               M1   module github.com/mcxiaochenn/MiMoVoice2API
+├── go.mod                        M1   module github.com/mcxiaochenn/MiMoVoice2API（零依赖，无 go.sum）
 ├── Dockerfile                    M1
 ├── .dockerignore                 M1
 ├── docker-compose.yml            M1
@@ -27,10 +31,11 @@ MiMoVoice2API/
 │   │   └── config.go             M1   env → Config，启动即校验
 │   ├── httpapi/
 │   │   ├── router.go             M1   路由表与中间件串联
-│   │   ├── middleware.go         M1   request id、recover、鉴权、body limit、访问日志
+│   │   ├── middleware.go         M1   request id、recover、鉴权、body limit、访问日志、指标采集
 │   │   ├── transcriptions.go     M1/M3 非流式 + SSE 增量转写
 │   │   ├── speech.go             M2/M3 非流式 + 二进制/SSE 流式合成
 │   │   ├── sse.go                M3   下游 SSE 写出与流内错误
+│   │   ├── metrics.go            M4   /metrics handler 与指标记录
 │   │   ├── models.go             M1
 │   │   ├── health.go             M1
 │   │   ├── dto.go                M1/M3 下游请求/响应/事件结构
@@ -45,6 +50,8 @@ MiMoVoice2API/
 │   │   ├── client.go             M1   客户端、状态码分类、流式调用、429 重试
 │   │   ├── types.go              M1   上游请求/响应结构
 │   │   └── sse.go                M3   上游 SSE 解析、截断判定
+│   ├── metrics/
+│   │   └── metrics.go            M4   零依赖 Prometheus 文本格式实现
 │   └── audio/
 │       └── sniff.go              M1   魔数嗅探、格式 ↔ MIME
 ├── testdata/
@@ -131,9 +138,10 @@ cmd/mimivoice2api  →  internal/httpapi  →  internal/adapter  →  internal/m
 
 | 层级 | 位置 | 要求 |
 | --- | --- | --- |
-| 单元 | `internal/*/*_test.go` | 表驱动；覆盖别名解析、格式映射、错误分类、魔数嗅探 |
+| 单元 | `internal/*/*_test.go` | 表驱动；覆盖别名解析、格式映射、错误分类、魔数嗅探、指标渲染 |
 | 契约 | `internal/httpapi/*_test.go` | `httptest.NewServer` 假上游，断言发出去的 JSON 与返回的下游响应 |
 | 冒烟 | 手动 + 真实 key | 每次发版前跑一次，结果记录在 PR/commit 里 |
+| CI | `.github/workflows/ci.yml` | `gofmt` / `vet` / `test -race` / 双架构 docker build，全部离线 |
 
 规则：
 
@@ -148,8 +156,8 @@ cmd/mimivoice2api  →  internal/httpapi  →  internal/adapter  →  internal/m
 - Conventional Commits，描述中文：`feat: 实现 ASR 非流式转写`
 - 一个 commit 一件事；格式化、重命名单独提交
 - 不提交 `.env`、音频、二进制、镜像产物
-- 标签：M1 `v0.1.0`，M2 `v0.2.0`，M3 `v0.3.0`，M4 `v1.0.0`
-- 未经用户明确授权，不 push、不建远程仓库
+- 标签：M1 `v0.1.0`，M2 `v0.2.0`，M3 `v0.3.0`，M4 `v1.0.0`；推送 tag 会触发发布工作流
+- 已获用户授权（2026-10-18）：commit、push、开分支、触发 CI 无需逐次确认；发版 tag 的版本号需与路线图一致
 
 ## 9. 文档
 

@@ -48,6 +48,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AuthToken != "" {
 		t.Errorf("AuthToken = %q, want empty", cfg.AuthToken)
 	}
+	if !cfg.MetricsEnabled {
+		t.Error("MetricsEnabled = false, want true by default")
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -63,6 +66,7 @@ func TestLoadOverrides(t *testing.T) {
 		"UPSTREAM_TIMEOUT": "30s",
 		"LOG_LEVEL":        "DEBUG",
 		"LOG_FORMAT":       "text",
+		"METRICS_ENABLED":  "false",
 	})
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
@@ -97,6 +101,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.LogFormat != "text" {
 		t.Errorf("LogFormat = %q", cfg.LogFormat)
+	}
+	if cfg.MetricsEnabled {
+		t.Error("MetricsEnabled = true, want false")
 	}
 }
 
@@ -145,6 +152,11 @@ func TestLoadErrors(t *testing.T) {
 			name:    "bad log format",
 			env:     map[string]string{"MIMO_API_KEY": "k", "LOG_FORMAT": "xml"},
 			wantSub: "LOG_FORMAT",
+		},
+		{
+			name:    "bad metrics flag",
+			env:     map[string]string{"MIMO_API_KEY": "k", "METRICS_ENABLED": "yes-please"},
+			wantSub: "METRICS_ENABLED",
 		},
 	}
 

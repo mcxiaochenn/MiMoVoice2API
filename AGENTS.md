@@ -8,17 +8,17 @@
 
 - 语言与运行时：Go 1.26，`CGO_ENABLED=0`，只用标准库
 - 部署：单二进制 + Docker（多阶段构建、非 root、只读根文件系统）
-- 规模目标：核心实现 1500 行以内（不含测试）
+- 规模目标：核心实现约 3500 行（含注释，不含测试）；新增功能优先复用现有分层，不要靠加抽象扩张
 
 ## 2. 当前阶段闸门
 
-**M3（流式）已实现并实测，M4（加固与发布）未开始。**
+**M0–M4 全部实现，项目进入维护态。**
 
-- 可以继续打磨 M1–M3 的代码与文档
-- 不要引入新端点、新依赖或转码能力，那超出项目边界
-- 新增或改变对外行为，先改 [docs/api-spec.md](docs/api-spec.md)，再改代码
+- 新端点、新依赖、新配置项都属于范围变更：先改 [docs/api-spec.md](docs/api-spec.md)，再改代码
+- 不要引入音频转码、缓存、队列、多租户，那超出项目边界
 - 改流式逻辑时注意两条既有结论：分片可独立解码（无需跨片缓冲），但 `wav` 分片是各自独立的完整文件（必须整段下发）
-- 进入 M4 的信号：用户明确说「做 M4」或「加固发布」
+- 改指标时保持标签基数受控：只允许固定枚举（route / status / err_code / kind），不要把用户输入当标签
+- 发布：推送 `v*` tag 会自动构建双架构镜像、发 GitHub release 并附二进制；不要在本地手工构建发布物
 
 ## 3. 硬性约束（不要做）
 
@@ -37,8 +37,9 @@
 
 ```text
 cmd/mimivoice2api  →  internal/httpapi  →  internal/adapter  →  internal/mimo
-                          │                     │
-                          └──→ internal/audio ←─┘
+                          │  │                  │
+                          │  └──→ internal/metrics
+                          └─────→ internal/audio ←─┘
 ```
 
 规则：
@@ -73,9 +74,12 @@ docker run --rm -p 8080:8080 --env-file .env mimivoice2api:dev
 
 curl -sS localhost:8080/healthz
 curl -sS localhost:8080/v1/models -H "Authorization: Bearer $AUTH_TOKEN"
+curl -sS localhost:8080/metrics -H "Authorization: Bearer $AUTH_TOKEN"
+
+git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0   # 触发发布
 ```
 
-`-race` 需要 CGO 与 gcc；本机没有编译器时不要把它当成本地门槛，交给 CI。
+`-race` 需要 CGO 与 gcc；本机没有编译器时不要把它当成本地门槛，交给 CI（`.github/workflows/ci.yml`）。
 
 验收以本地 `go build` 产物 + curl 冒烟为准；Docker 实装测试不是门槛（用户约定 2026-10-28）。
 
@@ -106,8 +110,8 @@ Docker 构建与真实上游 key 联调属于可选项，不作为 DoD 门槛。
 - Conventional Commits，描述用中文：`docs: 补齐 TTS 参数映射与错误码约定`
 - 一个 commit 只做一件事；文档与实现同属一件事时放同一个 commit
 - 默认直接在 `main` 上开发（单人项目）；需要评审时开 `feat/<短名>`
-- 未经用户明确授权，不执行 `git push`、不建远程仓库、不改远程配置
-- 版本标签从 `v0.1.0` 起：M1 → `v0.1.0`，M2 → `v0.2.0`，M3 → `v0.3.0`
+- 已获用户授权（2026-10-18）：commit、push、开分支、触发 CI 无需逐次确认；远程配置变更仍需说明理由
+- 版本标签从 `v0.1.0` 起：M1 → `v0.1.0`，M2 → `v0.2.0`，M3 → `v0.3.0`，M4 → `v1.0.0`
 
 ## 10. 安全与隐私
 

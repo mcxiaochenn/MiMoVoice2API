@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -57,17 +58,35 @@ func (s *server) withAccessLog(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), requestInfoKey, info)
 		rec := &responseRecorder{ResponseWriter: w}
 
+		// 包一层计数读取器，让日志与指标里的 in_bytes 反映真实读入量，
+		// 而不是只统计音频字段长度。
+		rawBody := r.Body
+		if rawBody == nil {
+			rawBody = http.NoBody
+		}
+		body := &countingReadCloser{rc: rawBody}
+		r.Body = body
+
+		if s.metrics != nil {
+			s.metrics.AddGauge(metricHTTPInFlight, "HTTP requests currently being served.", 1)
+			defer s.metrics.AddGauge(metricHTTPInFlight, "HTTP requests currently being served.", -1)
+		}
+
 		next.ServeHTTP(rec, r.WithContext(ctx))
 
 		status := rec.status
 		if status == 0 {
 			status = http.StatusOK
 		}
+		info.inBytes = body.n
+		elapsed := time.Since(start)
+		s.observeRequest(info, status, rec.bytes, elapsed)
+
 		s.log.LogAttrs(ctx, slog.LevelInfo, "request",
 			slog.String("request_id", requestIDFrom(ctx)),
 			slog.String("route", info.route),
 			slog.Int("status", status),
-			slog.Int64("dur_ms", time.Since(start).Milliseconds()),
+			slog.Int64("dur_ms", elapsed.Milliseconds()),
 			slog.Int64("in_bytes", info.inBytes),
 			slog.Int64("out_bytes", rec.bytes),
 			slog.String("model_requested", info.modelRequested),
@@ -76,6 +95,22 @@ func (s *server) withAccessLog(next http.Handler) http.Handler {
 			slog.String("err_code", info.errCode),
 		)
 	})
+}
+
+// countingReadCloser 统计请求体被读取的字节数，同时保留 Close 语义。
+type countingReadCloser struct {
+	rc io.ReadCloser
+	n  int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error {
+	return c.rc.Close()
 }
 
 func (s *server) withRecover(next http.Handler) http.Handler {
@@ -191,6 +226,8 @@ func routeName(path string) string {
 		return "models"
 	case "/healthz":
 		return "healthz"
+	case "/metrics":
+		return "metrics"
 	default:
 		return "unknown"
 	}
