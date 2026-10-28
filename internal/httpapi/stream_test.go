@@ -270,6 +270,42 @@ func TestSpeechStreamUpstreamError(t *testing.T) {
 	}
 }
 
+// 二进制音频流（mp3/pcm）把各分片 base64 解码后依次拼接。
+// 这是 MP3/PCM 分片拼接的离线验证：分片独立解码、按序写入即为合法输出。
+func TestSpeechBinaryStreamSplicesChunks(t *testing.T) {
+	parts := []string{"QUJD", "REVG", "R0hJ"} // ABC / DEF / GHI
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		write := func(line string) {
+			fmt.Fprint(w, line)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write("data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		for _, part := range parts {
+			write("data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{\"audio\":{\"id\":\"a\",\"data\":\"" + part + "\"}}}]}\n\n")
+		}
+		write("data: {\"id\":\"c\",\"model\":\"mimo-v2.5-tts\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		write("data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	handler := testHandler(testConfig(upstream.URL))
+	rec := doSpeech(t, handler, `{"input":"拼接测试","response_format":"pcm"}`, true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/pcm" {
+		t.Errorf("Content-Type = %q, want audio/pcm", got)
+	}
+	if got := rec.Body.String(); got != "ABCDEFGHI" {
+		t.Errorf("body = %q, want spliced chunks", got)
+	}
+}
+
 // 二进制音频流（mp3/pcm）在已经推送数据后上游失败：不能再写 JSON 尾巴，
 // 否则客户端会把错误体当成音频的一部分。正确做法是中止连接，让下载方感知截断。
 func TestSpeechBinaryStreamAbortsAfterPartialWrite(t *testing.T) {
