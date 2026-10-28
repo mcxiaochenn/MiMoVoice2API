@@ -2,6 +2,8 @@
 
 原则：每个里程碑都能独立验证，不堆未验证的改动。复杂度用 S / M / L 表示，不用工期承诺。
 
+**验收约定**（2026-10-28）：以本地 `go build` 产物 + curl 冒烟为准；不要求 Docker 实装测试，也不强制真实上游 key。Dockerfile 仍作为交付物维护，但不构成验收门槛。
+
 ## M0 — 仓库与文档规划（已完成）
 
 **目标**：把契约、架构、约定、节奏写清楚，让后续实现不需要再做设计决策。
@@ -29,7 +31,7 @@
 
 **目标**：`/v1/audio/transcriptions` 非流式端到端可用，镜像能跑起来。
 
-**状态**：代码、单元/契约测试与 Docker 文件已完成；真实上游联调与镜像运行未在本机执行（无 `MIMO_API_KEY`、未安装 Docker），对应验收项未勾选。
+**状态**：代码、单元/契约测试与 Docker 文件已完成；已用本地可执行文件对假上游完成成功链路（`json` / `text` / `verbose_json`）与失败链路（不可达、404、格式拒绝）冒烟。真实上游 key 与 Docker 实装不作为验收门槛。
 
 范围：
 
@@ -48,6 +50,7 @@
 ```bash
 go build ./... && go vet ./... && go test ./...
 
+# 可选：Docker 打包检查，不参与验收
 docker build -t mimivoice2api:dev .
 docker run --rm -d --name m2a -p 8080:8080 --env-file .env mimivoice2api:dev
 curl -sS localhost:8080/healthz
@@ -56,14 +59,15 @@ curl -sS localhost:8080/v1/audio/transcriptions \
   -F file=@testdata/audio/sample-1s.wav -F model=whisper-1
 ```
 
-- [ ] 真实 key 下返回非空 `text`（待联调）
+- [x] 本地可执行文件 + 假上游返回非空 `text`
 - [x] `response_format=text` 返回纯文本且无 JSON 包装
 - [x] `verbose_json` 的 `duration` 取自上游 `usage.seconds`
 - [x] 上传 `webm` 返回 400 `unsupported_audio_format`
 - [x] 未知模型返回 400 `model_not_found`
 - [x] 无 token 返回 401，错误 token 返回 401 `invalid_token`
-- [x] 日志中没有 base64、文本内容、密钥（代码审查）
-- [ ] 镜像 < 25 MB，容器以 uid 10001 运行，`read_only` 下正常工作（本机无 Docker）
+- [x] 日志中没有 base64、文本内容、密钥（冒烟日志确认）
+- [x] 上游 404 / 不可达分别映射为 `upstream_bad_response` / `upstream_unreachable`
+- [x] Dockerfile 与 compose 已提供（构建运行不在验收范围）
 
 **风险**：上游 `input_audio` 对 data URL 的格式要求可能与文档有偏差 → 首个联调用例先打通最小请求，再补参数。
 

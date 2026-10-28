@@ -83,7 +83,7 @@ speech.write_to_file("out.mp3")
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MIMO_API_KEY` | 无（必填） | 上游 API Key，只从环境变量读 |
-| `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` | 上游地址，便于指向代理或测试桩 |
+| `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` | 上游地址，必须包含 `/v1`，便于指向代理或测试桩 |
 | `MIMO_ASR_MODEL` | `mimo-v2.5-asr` | 请求未指定模型时的转写默认值 |
 | `MIMO_TTS_MODEL` | `mimo-v2.5-tts` | 请求未指定模型时的合成默认值 |
 | `LISTEN_ADDR` | `:8080` | 监听地址 |
@@ -131,6 +131,8 @@ gofmt -l .
 ```
 
 `go test -race` 需要 cgo 与 gcc，本机缺编译器时由 CI 执行。
+
+验收以本地 `go build` 产物 + curl 冒烟为准，不要求 Docker 实装测试。也可以先 `go build -o bin/mimivoice2api ./cmd/mimivoice2api` 再直接运行。
 
 本机没有 `MIMO_API_KEY` 时，测试全程使用 `httptest` 假上游，不访问真实网络。
 

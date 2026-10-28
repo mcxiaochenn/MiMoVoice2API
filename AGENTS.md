@@ -76,6 +76,8 @@ curl -sS localhost:8080/v1/models -H "Authorization: Bearer $AUTH_TOKEN"
 
 `-race` 需要 CGO 与 gcc；本机没有编译器时不要把它当成本地门槛，交给 CI。
 
+验收以本地 `go build` 产物 + curl 冒烟为准；Docker 实装测试不是门槛（用户约定 2026-10-28）。
+
 冒烟测试用 `testdata/audio/` 下的合成音频，不要提交真实人声。
 
 ## 7. 契约同步
@@ -95,6 +97,8 @@ curl -sS localhost:8080/v1/models -H "Authorization: Bearer $AUTH_TOKEN"
 4. 相关文档已更新，链接可达
 5. 没有引入未在文档中声明的新依赖或新配置项
 6. `git status` 干净，没有误提交的 `.env`、构建产物、临时文件
+
+Docker 构建与真实上游 key 联调属于可选项，不作为 DoD 门槛。
 
 ## 9. 提交规范
 
