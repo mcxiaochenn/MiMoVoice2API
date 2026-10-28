@@ -1,0 +1,30 @@
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# Go 构建产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# 本地临时音频与输出
+/tmp/
+out.mp3
+out.wav
+out.pcm
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 本地协作/记忆目录
+.workbuddy/
