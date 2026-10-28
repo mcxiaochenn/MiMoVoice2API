@@ -38,7 +38,8 @@ func run() error {
 
 	logger := newLogger(cfg, os.Stdout)
 	if cfg.AuthToken == "" {
-		logger.Warn("AUTH_TOKEN is empty; the API is unauthenticated and must not be exposed publicly")
+		// config 已强制此时只监听回环地址，这里提醒的只剩「无鉴权」这一事实。
+		logger.Warn("AUTH_TOKEN is empty; the API is unauthenticated and bound to loopback only")
 	}
 
 	client := mimo.New(cfg.MIMOBaseURL, cfg.MIMOAPIKey, cfg.UpstreamTimeout)

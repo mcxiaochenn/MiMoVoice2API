@@ -8,7 +8,7 @@
 ### 1.1 基址与鉴权
 
 - 基址：`http://<host>:8080/v1`，与 OpenAI SDK 的 `base_url` 对齐
-- 鉴权：`Authorization: Bearer <AUTH_TOKEN>`；`AUTH_TOKEN` 为空时不校验（仅限本机调试）
+- 鉴权：`Authorization: Bearer <AUTH_TOKEN>`；`AUTH_TOKEN` 为空时不校验，且启动时强制 `LISTEN_ADDR` 为回环地址（`127.0.0.0/8`、`::1`、`localhost`），配置了非回环监听会拒绝启动——仅限本机调试
 - 免鉴权路径：仅 `GET /healthz`。`GET /metrics` 与业务端点一样需要 token
 - 上游鉴权：服务端使用 `Authorization: Bearer <MIMO_API_KEY>`，密钥不出服务端
 

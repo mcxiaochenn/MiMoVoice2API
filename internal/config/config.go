@@ -5,6 +5,8 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -138,7 +140,42 @@ func load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("LISTEN_ADDR must not be empty")
 	}
 
+	// 无鉴权时只允许回环监听：默认配置（:8080 绑定所有接口）会把未鉴权服务
+	// 直接暴露到网络里，必须在启动阶段就拒绝，而不是只打一行警告。
+	if cfg.AuthToken == "" {
+		if err := validateLoopbackListen(cfg.ListenAddr); err != nil {
+			return Config{}, err
+		}
+	}
+
 	return cfg, nil
+}
+
+// validateLoopbackListen 校验 LISTEN_ADDR 绑定的是回环地址。
+func validateLoopbackListen(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("LISTEN_ADDR %q must be in host:port form", addr)
+	}
+	if hostIsLoopback(host) {
+		return nil
+	}
+	return fmt.Errorf(
+		"AUTH_TOKEN is empty but LISTEN_ADDR %q is not a loopback address; set AUTH_TOKEN or listen on a loopback address such as 127.0.0.1:8080",
+		addr,
+	)
+}
+
+// hostIsLoopback 判断监听主机是否为回环。
+// 空主机（":8080"）与 0.0.0.0 / :: 一样表示绑定所有接口，不算回环；
+// 用 netip 解析而不是字符串前缀，IPv4、IPv6（含 zone）与 localhost 都覆盖。
+func hostIsLoopback(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 func stringOrDefault(raw, fallback string) string {

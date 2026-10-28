@@ -13,7 +13,9 @@ func loadFrom(t *testing.T, env map[string]string) (Config, error) {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := loadFrom(t, map[string]string{"MIMO_API_KEY": "test-key"})
+	// 默认 LISTEN_ADDR 是 :8080（绑定所有接口），必须配 AUTH_TOKEN 才合法，
+	// 因此这里带上 token 来验证默认值；无鉴权场景见 TestLoadListenGuard。
+	cfg, err := loadFrom(t, map[string]string{"MIMO_API_KEY": "test-key", "AUTH_TOKEN": "secret"})
 	if err != nil {
 		t.Fatalf("load() error = %v", err)
 	}
@@ -48,11 +50,53 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogFormat != "json" {
 		t.Errorf("LogFormat = %q", cfg.LogFormat)
 	}
-	if cfg.AuthToken != "" {
-		t.Errorf("AuthToken = %q, want empty", cfg.AuthToken)
-	}
 	if !cfg.MetricsEnabled {
 		t.Error("MetricsEnabled = false, want true by default")
+	}
+}
+
+// 无鉴权时只允许回环监听；配了 AUTH_TOKEN 则不限制。
+func TestLoadListenGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{name: "默认监听无鉴权被拒绝", env: map[string]string{"MIMO_API_KEY": "k"}, wantErr: true},
+		{name: "空主机绑定所有接口", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": ":8080"}, wantErr: true},
+		{name: "IPv4 通配地址", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "0.0.0.0:8080"}, wantErr: true},
+		{name: "IPv6 通配地址", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "[::]:8080"}, wantErr: true},
+		{name: "局域网地址", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "192.168.1.10:8080"}, wantErr: true},
+		{name: "公网主机名", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "example.com:8080"}, wantErr: true},
+		{name: "缺少端口", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "127.0.0.1"}, wantErr: true},
+		{name: "IPv4 回环", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "127.0.0.1:8080"}},
+		{name: "IPv4 回环段", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "127.0.0.53:8080"}},
+		{name: "IPv6 回环", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "[::1]:8080"}},
+		{name: "localhost", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "localhost:8080"}},
+		{name: "localhost 大小写", env: map[string]string{"MIMO_API_KEY": "k", "LISTEN_ADDR": "LOCALHOST:8080"}},
+		{name: "有鉴权时允许通配监听", env: map[string]string{"MIMO_API_KEY": "k", "AUTH_TOKEN": "secret", "LISTEN_ADDR": ":8080"}},
+		{name: "有鉴权时允许公网地址", env: map[string]string{"MIMO_API_KEY": "k", "AUTH_TOKEN": "secret", "LISTEN_ADDR": "0.0.0.0:8080"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := loadFrom(t, tt.env)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("load() error = nil, want error")
+				}
+				if !strings.Contains(err.Error(), "loopback") && !strings.Contains(err.Error(), "host:port") {
+					t.Fatalf("error = %q, want loopback / host:port hint", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("load() error = %v", err)
+			}
+			if cfg.AuthToken != strings.TrimSpace(tt.env["AUTH_TOKEN"]) {
+				t.Errorf("AuthToken = %q", cfg.AuthToken)
+			}
+		})
 	}
 }
 

@@ -128,7 +128,7 @@ curl -sS -N localhost:8080/v1/audio/speech \
 | `MIMO_ASR_MODEL` | `mimo-v2.5-asr` | 请求未指定模型时的转写默认值 |
 | `MIMO_TTS_MODEL` | `mimo-v2.5-tts` | 请求未指定模型时的合成默认值 |
 | `LISTEN_ADDR` | `:8080` | 监听地址 |
-| `AUTH_TOKEN` | 空 | 下游 Bearer token；留空表示不校验，仅限本机调试 |
+| `AUTH_TOKEN` | 空 | 下游 Bearer token；留空表示不校验，**且只允许回环监听**（见下方说明） |
 | `MAX_UPLOAD_BYTES` | `26214400`（25 MiB） | 上传音频上限，超限 413 |
 | `MAX_TTS_CHARS` | `1000` | 单次合成文本字符上限 |
 | `MAX_CONCURRENT_REQUESTS` | `4` | 并发处理上限，超出 503 `server_busy`；`/healthz` 不占额度 |
@@ -136,6 +136,10 @@ curl -sS -N localhost:8080/v1/audio/speech \
 | `METRICS_ENABLED` | `true` | 是否暴露 `/metrics`；关闭后该路径返回 404 |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LOG_FORMAT` | `json` | `json` / `text` |
+
+> **行为变化（稳定性修复后）**：`AUTH_TOKEN` 为空时启动会强制 `LISTEN_ADDR` 为回环地址
+> （`127.0.0.0/8`、`::1`、`localhost`）；配置了 `:8080` / `0.0.0.0` 等非回环监听会**直接拒绝启动**，
+> 避免无鉴权服务被无意暴露到公网。本机匿名调试请显式设置 `LISTEN_ADDR=127.0.0.1:8080`。
 
 ## 可观测性
 
