@@ -275,3 +275,21 @@ func TestLoadErrors(t *testing.T) {
 		})
 	}
 }
+
+// 配置错误会写入启动日志，不能带出地址中的凭据或查询参数。
+func TestBaseURLErrorDoesNotExposeSecrets(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:private-password@api.example.com/v1",
+		"https://api.example.com/v1?token=private-token",
+		"https://api.example.com/v1#private-fragment",
+		"https://user:private-password@api.example.com/%zz",
+	} {
+		err := validateBaseURL(raw)
+		if err == nil {
+			t.Fatalf("expected invalid URL")
+		}
+		if strings.Contains(err.Error(), "private-") {
+			t.Fatalf("error exposes credentials: %s", err)
+		}
+	}
+}
