@@ -133,9 +133,14 @@ OpenAI 在纯文本响应末尾不加换行，本服务保持一致。
 | 下游 `model` | 上游 `model` |
 | --- | --- |
 | 空 | `MIMO_ASR_MODEL`（默认 `mimo-v2.5-asr`） |
-| `whisper-1` / `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` | `mimo-v2.5-asr` |
+| `gpt-transcribe` / `whisper-1` / `gpt-4o-transcribe` / `gpt-4o-mini-transcribe` | `mimo-v2.5-asr` |
 | `mimo-v2.5-asr` | 原样 |
 | 其它 | 400 `model_not_found` |
+
+别名只是**存在性兼容**：模型名相同不代表识别能力、时间戳、语种覆盖与 OpenAI 一致，结果一律来自 MiMo 上游。
+OpenAI 侧的弃用时间表（`whisper-1` 等 2027-02-26 下线、`gpt-transcribe` 为 2026-07 起的推荐模型）不影响本表：
+客户端发任何别名都会映射到 `mimo-v2.5-asr`。`gpt-live-transcribe`（Realtime 专用）与
+`gpt-4o-transcribe-diarize`（说话人分离）**不接受**：它们的语义本适配层无法兑现。
 
 ### 2.5 上行映射
 
@@ -255,11 +260,14 @@ Transfer-Encoding: chunked
 
 | 下游 `model` | 上游 `model` | 用途 |
 | --- | --- | --- |
-| 空 / `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` | `mimo-v2.5-tts` | 内置音色合成 |
+| 空 / `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` / `gpt-4o-mini-tts-2025-12-15` | `mimo-v2.5-tts` | 内置音色合成 |
 | `mimo-v2.5-tts` | 原样 | 同上 |
 | `mimo-v2.5-tts-voicedesign` | 原样 | 用 `instructions` 描述音色 |
 | `mimo-v2.5-tts-voiceclone` | 原样 | 用 `voice` 传样本 |
 | 其它 | — | 400 `model_not_found` |
+
+`tts-1` 系列在 OpenAI 已进入弃用期（2027-01-06 下线，且其指定替代品是 Realtime 模型、不能服务
+`/v1/audio/speech`）；本适配层的别名不受该时间表影响，仍映射到 `mimo-v2.5-tts`。
 
 内置音色别名（仅做存在性兼容，音色语义**不与** OpenAI 对齐）：
 
@@ -526,8 +534,12 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 
 ## 6. 与 OpenAI 的行为差异
 
+> OpenAI 兼容面（模型名、参数、事件）核对日期：2026-10-28，
+> 来源 `developers.openai.com` 的 Transcription / Speech 指南与 Deprecations 页面。
+
 | 差异 | 影响 | 处理 |
 | --- | --- | --- |
+| 模型名兼容 ≠ 语义一致 | `gpt-transcribe` 等别名可用，但识别质量、语种、速度是 MiMo 的 | 别名仅做存在性映射；要对齐效果请直接用 `mimo-v2.5-*` |
 | 无时间戳 | `srt` / `vtt` 不可用，`verbose_json` 无 `segments` | 明确 400，不伪造时间轴 |
 | 无词级时间戳 | `timestamp_granularities[]=word` 不可用 | 400 |
 | `language` 仅 `auto` / `zh` / `en` | 请求其它语言会被降级 | 回落 `auto` + `language-fallback-auto` |
@@ -535,6 +547,7 @@ sum by (kind) (rate(mimo_voice2api_upstream_requests_total[5m]))
 | `temperature` 不生效 | 无法调随机性 | 接受但忽略并警告 |
 | `speed` 不生效 | 语速不可控 | 忽略并警告；需要变速请自行后处理 |
 | 音色语义不对齐 | `nova` 不等于 OpenAI 的 nova | 别名仅保证「存在且可用」 |
+| OpenAI 新增音色未全部映射 | `marin` / `cedar` 等新音色传入会 400 `voice_not_found` | 需要时再加别名映射；MiMo 侧无对应音色语义 |
 | 不支持输入 `webm` / `m4a` / `ogg` / `flac` | 浏览器直录的 `webm` 需先转码 | 400 + 明确提示 |
 | 不支持输出 `opus` / `aac` / `flac` | 部分客户端默认要 opus | 400 + 明确提示 |
 | 错误文案可能为中文 | 客户端日志可读性 | `code` 已归一化，按 `code` 判断 |

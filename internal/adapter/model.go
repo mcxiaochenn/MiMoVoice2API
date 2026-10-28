@@ -16,16 +16,24 @@ const (
 	TTSVoiceCloneModel = "mimo-v2.5-tts-voiceclone"
 )
 
+// asrAliases 是 OpenAI 转写模型名的存在性兼容表：只保证「名字能用」，
+// 语义与识别效果一律以 MiMo 上游为准。
+// whisper-1 等旧名在 OpenAI 已进入弃用期（2027-02 下线），但客户端仍在用，保留；
+// gpt-transcribe 是 2026-07 起的推荐文件转写模型。
 var asrAliases = map[string]struct{}{
 	"whisper-1":              {},
 	"gpt-4o-transcribe":      {},
 	"gpt-4o-mini-transcribe": {},
+	"gpt-transcribe":         {},
 }
 
+// ttsAliases 同样只做存在性兼容；gpt-4o-mini-tts-2025-12-15 是 OpenAI
+// speech 端点接受的快照名。tts-1 系列在 OpenAI 已进入弃用期（2027-01 下线）。
 var ttsAliases = map[string]struct{}{
-	"tts-1":           {},
-	"tts-1-hd":        {},
-	"gpt-4o-mini-tts": {},
+	"tts-1":                      {},
+	"tts-1-hd":                   {},
+	"gpt-4o-mini-tts":            {},
+	"gpt-4o-mini-tts-2025-12-15": {},
 }
 
 // ResolveASRModel 把下游模型名解析为上游模型 ID。
@@ -48,7 +56,7 @@ func ResolveASRModel(requested, fallback string) (upstream string, defaulted boo
 		Code:  "model_not_found",
 		Param: "model",
 		Message: fmt.Sprintf(
-			"model %q is not supported; use %s, whisper-1, gpt-4o-transcribe or gpt-4o-mini-transcribe",
+			"model %q is not supported; use %s, whisper-1, gpt-transcribe, gpt-4o-transcribe or gpt-4o-mini-transcribe",
 			model, ASRModel,
 		),
 	}

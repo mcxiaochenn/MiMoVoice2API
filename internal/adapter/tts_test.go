@@ -327,6 +327,43 @@ func TestResolveVoice(t *testing.T) {
 	}
 }
 
+func TestResolveTTSModel(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		wantModel string
+		wantCode  string
+	}{
+		{name: "空走默认", requested: "", wantModel: TTSModel},
+		{name: "原生合成模型", requested: TTSModel, wantModel: TTSModel},
+		{name: "原生音色设计", requested: TTSVoiceDesignModel, wantModel: TTSVoiceDesignModel},
+		{name: "原生音色克隆", requested: TTSVoiceCloneModel, wantModel: TTSVoiceCloneModel},
+		{name: "tts-1 别名", requested: "tts-1", wantModel: TTSModel},
+		{name: "tts-1-hd 别名", requested: "tts-1-hd", wantModel: TTSModel},
+		{name: "gpt-4o-mini-tts 别名", requested: "gpt-4o-mini-tts", wantModel: TTSModel},
+		{name: "快照别名", requested: "gpt-4o-mini-tts-2025-12-15", wantModel: TTSModel},
+		{name: "未知模型", requested: "tts-9", wantCode: "model_not_found"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model, _, err := ResolveTTSModel(tt.requested, "")
+			if tt.wantCode != "" {
+				if err == nil || err.Code != tt.wantCode {
+					t.Fatalf("error = %+v, want code %q", err, tt.wantCode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if model != tt.wantModel {
+				t.Fatalf("ResolveTTSModel(%q) = %q, want %q", tt.requested, model, tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestNormalizeVoiceSample(t *testing.T) {
 	wavB64 := base64.StdEncoding.EncodeToString(wavHeader)
 	mp3B64 := base64.StdEncoding.EncodeToString([]byte("ID3\x04\x00\x00\x00"))
